@@ -1,6 +1,6 @@
 {
   "name": "uns-archiver",
-  "version": "5.2.0",
+  "version": "5.2.1",
   "description": "UNS OpenHub add-on that archives UNS data and table packets to QuestDB.",
   "private": true,
   "license": "MIT",
@@ -16,7 +16,7 @@
   "unsDatahub": {
     "schemaVersion": 1,
     "kind": "addon",
-    "controllerCompatibility": ">=7.1 <8"
+    "controllerCompatibility": ">=2 <3"
   },
   "type": "module",
   "scripts": {

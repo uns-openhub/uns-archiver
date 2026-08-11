@@ -1,0 +1,46 @@
+name: Create release tag
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - package.json
+      - .github/workflows/tag-from-package.yml
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Read and validate package version
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          test -n "$version"
+          tag="v$version"
+          GITHUB_REF_NAME="$tag" pnpm run check-release-version
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Create release tag
+        env:
+          TAG: ${{ steps.package.outputs.tag }}
+          GITHUB_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --refs origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag '$TAG' already exists; refusing to move it." >&2
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" "$GITHUB_SHA" -m "Release $TAG"
+          git push origin "refs/tags/$TAG"
