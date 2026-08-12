@@ -4,7 +4,9 @@
 
 - Read `package.json`, `README.md`, `config.schema.json`, and
   `src/config/project.config.extension.ts`.
-- Use `config-example.json` as the only committed runtime configuration example.
+- Keep the three neutral runtime profiles committed: `config-development-host.json`,
+  `config-development-podman.json`, and `config-production.json`. Do not put
+  deployment-specific hosts, credentials, or topic hierarchies in them.
 - Read `src/index.ts` for subscription, buffering, mapping publication, and control
   API behavior.
 - Read `src/writers/questDbWriter.ts` and the tests before changing QuestDB identity

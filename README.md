@@ -21,26 +21,45 @@ QuestDB table mappings back to the UNS infrastructure.
 - A running UNS OpenHub controller and MQTT broker
 - QuestDB with HTTP line protocol enabled
 
-## Setup
+## Configuration profiles
+
+The service ships three topology-specific profiles. They contain no deployment
+credentials or customer endpoints.
+
+| Profile | Use it when | MQTT and QuestDB | Service credential |
+| --- | --- | --- | --- |
+| `config-development-host.json` | Running the service directly with `pnpm run dev` on the host | `localhost` | `UNS_SERVICE_TOKEN` from untracked `.env` |
+| `config-development-podman.json` | Deploying through a local Podman OpenHub controller | Compose DNS: `mosquitto`, `questdb` | Controller-managed `UNS_SERVICE_TOKEN_FILE` |
+| `config-production.json` | Creating a production controller instance | Compose/Runtime DNS: `mosquitto`, `questdb` | Controller-managed `/run` token file |
+
+The Podman and production profiles intentionally share their internal network
+names: in both cases the RTT process runs alongside the controller. The
+production profile sets `uns.env` to `prod` and is only a safe starting point;
+the controller copies it into a per-instance configuration that is retained
+across add-on releases.
+
+## Direct host development
 
 ```bash
 pnpm install
-cp config-local.json config.json
-# Direct development only; keep the machine token in untracked .env.
-export UNS_SERVICE_TOKEN='your-development-machine-token'
+cp config-development-host.json config.json
+cp .env.example .env
+# Set UNS_SERVICE_TOKEN in .env to a development machine token.
 pnpm run dev
 ```
 
-`config-local.json` is the local OpenHub container profile: the RTT child process
-reaches its controller on `localhost:3200`, while MQTT and QuestDB use the Compose
-service names `mosquitto` and `questdb`. `input` inherits the full MQTT connection
-from `infra`, so it is unnecessary unless it intentionally overrides a broker setting.
+For a controller-managed local Podman or production installation, deploy the
+add-on from **Micro services** and select the matching profile. Do not copy the
+repository `.env` into that instance. `input` inherits the full MQTT connection
+from `infra`, so it is unnecessary unless it intentionally overrides a broker
+setting.
 
 Controller authentication resolves in this order: the controller-managed
 `UNS_SERVICE_TOKEN_FILE`, direct-development `UNS_SERVICE_TOKEN`, `uns.token`, then
 the legacy `uns.email`/`uns.password` fallback. The first three options avoid storing
 a user password in `config.json`; use the legacy fallback only to bootstrap or replace
-a development machine token. `config-example.json` is the generic host-based template.
+a development machine token. None of the committed profiles requires an email or
+password.
 
 The control API must use either `uns.jwksWellKnownUrl` or `UNS_API_JWT_SECRET`.
 JWKS is preferred when the archiver runs alongside UNS OpenHub.

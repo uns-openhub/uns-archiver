@@ -9,7 +9,8 @@
     "kidWellKnownUrl": "http://localhost:3200/api/.well-known/kid",
     "supervisor": {
       "enabled": false
-    }
+    },
+    "env": "prod"
   },
   "infra": {
     "host": "mosquitto"

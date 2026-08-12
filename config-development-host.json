@@ -1,0 +1,33 @@
+{
+  "uns": {
+    "graphql": "http://localhost:3200/graphql",
+    "rest": "http://localhost:3200/api",
+    "processName": "uns-archiver",
+    "instanceMode": "handover",
+    "handover": true,
+    "jwksWellKnownUrl": "http://localhost:3200/api/.well-known/jwks.json",
+    "kidWellKnownUrl": "http://localhost:3200/api/.well-known/kid",
+    "supervisor": {
+      "enabled": false
+    },
+    "env": "dev"
+  },
+  "infra": {
+    "host": "localhost"
+  },
+  "archiver": {
+    "inactiveBufferMax": 2000,
+    "inactiveBufferMaxAgeMs": 300000,
+    "traceIngest": false
+  },
+  "questdb": {
+    "configurationString": "http::addr=localhost:9000;auto_flush=on",
+    "dataStorage": [
+      {
+        "tablePrefix": "uns_enterprise",
+        "topic": "enterprise/#",
+        "ingestMode": "dedup"
+      }
+    ]
+  }
+}
