@@ -1,4 +1,11 @@
-import { UnsProxyProcess, ConfigFile, logger, type IApiProxyOptions } from "@uns-kit/core";
+import {
+  UnsProxyProcess,
+  ConfigFile,
+  logger,
+  mqttChannelParameters,
+  resolveMqttChannel,
+  type IApiProxyOptions,
+} from "@uns-kit/core";
 import UnsMqttProxy from "@uns-kit/core/uns-mqtt/uns-mqtt-proxy.js";
 import { Sender } from "@questdb/nodejs-client";
 import { createHash } from "crypto";
@@ -552,18 +559,13 @@ async function publishQuestDbMapping() {
 
 async function setupApiProxy() {
   if (apiProxy) return;
-  const infraHost = config.infra.host ?? config.infra.hosts?.[0] ?? config.infra.servers?.[0]?.host;
-  if (!infraHost) {
-    logger.warn("Infra host missing; skipping API proxy setup.");
-    return;
-  }
+  const infraChannel = resolveMqttChannel(config.infra);
 
   const apiOptions = buildApiOptions();
   try {
-    const processWithApi = new UnsProxyProcess(infraHost, {
+    const processWithApi = new UnsProxyProcess(infraChannel.host, {
       processName: config.uns.processName,
-      username: config.infra.username,
-      password: config.infra.password,
+      ...mqttChannelParameters(infraChannel),
     }) as UnsProxyProcessWithApi;
     serviceMetadataPublisher = processWithApi;
 
@@ -788,40 +790,21 @@ async function subscribeToTopics(topics: string[]) {
     return;
   }
 
-  const inputConfig = config.input;
-  if (!inputConfig) {
-    logger.error("Input configuration is missing; cannot subscribe to topics.");
-    return;
-  }
-
-  const infraHost = config.infra.host ?? config.infra.hosts?.[0] ?? config.infra.servers?.[0]?.host;
-  if (!infraHost) {
-    logger.error("Infra host is missing; cannot create UNS proxy process.");
-    return;
-  }
-
-  const inputHost = inputConfig.host ?? inputConfig.hosts?.[0] ?? inputConfig.servers?.[0]?.host;
-  if (!inputHost) {
-    logger.error("Input host is missing; cannot create UNS MQTT proxy.");
-    return;
-  }
+  const infraChannel = resolveMqttChannel(config.infra);
+  const inputChannel = resolveMqttChannel(config.infra, config.input);
 
   if (!mqttInput) {
-    const unsProxyProcess = new UnsProxyProcess(infraHost,
-      {
-        processName: config.uns.processName,
-        username: config.infra.username,
-        password: config.infra.password,
-      }
-    );
+    const unsProxyProcess = new UnsProxyProcess(infraChannel.host, {
+      processName: config.uns.processName,
+      ...mqttChannelParameters(infraChannel),
+    });
     mqttInput = await unsProxyProcess.createUnsMqttProxy(
-      inputHost,
+      inputChannel.host,
       "unsArchiverInput",
       config.uns.instanceMode!,
       config.uns.handover!,
       {
-        username: inputConfig.username,
-        password: inputConfig.password,
+        ...mqttChannelParameters(inputChannel),
         mqttSubToTopics: desiredTopics,
         subscribeThrottlingDelay: 0,
       }

@@ -1,7 +1,6 @@
 import { request, gql } from "graphql-request";
 import { UnsNode } from "./graphql/schema.js";
-import { ConfigFile } from "@uns-kit/core/config-file.js";
-import { logger } from "@uns-kit/core";
+import { AuthClient, ConfigFile, logger, ServiceTokenProvider, type AccessTokenProvider } from "@uns-kit/core";
 import { promises as fs } from "fs";
 import path from "path";
 import { CircuitBreaker, errorMessage, isRetryableNetworkError, withRetry } from "./resilience.js";
@@ -19,17 +18,6 @@ const GRAPHQL_CIRCUIT = new CircuitBreaker("uns-graphql", {
   failureThreshold: 5,
   openMs: 30000,
 });
-
-type TokenCache = {
-  restBase: string;
-  email: string;
-  accessToken: string;
-  refreshToken?: string;
-  expiresAtMs: number;
-};
-
-let tokenCache: TokenCache | null = null;
-
 
 const hasFullTopic = (node: UnsNode): node is UnsNode & { fullTopic: string } => {
   return typeof node.fullTopic === "string";
@@ -93,186 +81,23 @@ const writeCache = async (payload: { topics: string[]; metaByTopic: Record<strin
   }
 };
 
-const decodeJwtExpMs = (token: string): number | null => {
-  try {
-    const [, payload] = token.split(".");
-    if (!payload) return null;
-    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
-    const json = Buffer.from(normalized, "base64").toString("utf8");
-    const parsed = JSON.parse(json);
-    if (typeof parsed?.exp !== "number") return null;
-    return parsed.exp * 1000;
-  } catch {
-    return null;
-  }
+let legacyAuthClient: Promise<AuthClient | null> | undefined;
+
+const legacyAuthFallback: AccessTokenProvider = {
+  async getAccessToken(): Promise<string | undefined> {
+    legacyAuthClient ??= AuthClient.create().catch(() => null);
+    const client = await legacyAuthClient;
+    return client?.getAccessToken();
+  },
 };
 
-const isTokenFresh = (expiresAtMs: number | null): boolean => {
-  if (!expiresAtMs) return false;
-  return Date.now() + 30_000 < expiresAtMs;
-};
-
-const normalizeBaseUrl = (value: string): string => value.replace(/\/$/, "");
-
-const getSetCookieHeaders = (headers: Headers): string[] => {
-  const anyHeaders = headers as any;
-  if (typeof anyHeaders.getSetCookie === "function") {
-    const setCookies = anyHeaders.getSetCookie();
-    if (Array.isArray(setCookies)) {
-      return setCookies.filter((value) => typeof value === "string");
-    }
-  }
-  const single = headers.get("set-cookie");
-  return single ? [single] : [];
-};
-
-const extractRefreshToken = (headers: Headers): string | undefined => {
-  for (const value of getSetCookieHeaders(headers)) {
-    const match = value.match(/(?:^|;\s*)RefreshToken=([^;]+)/i);
-    if (match?.[1]) return match[1];
-  }
-  return undefined;
-};
-
-const fetchWithTimeout = async (
-  url: string,
-  init: RequestInit,
-  timeoutMs: number,
-): Promise<Response> => {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } finally {
-    clearTimeout(timeout);
-  }
-};
-
-const loginForTokens = async (
-  restBase: string,
-  email: string,
-  password: string,
-): Promise<{ accessToken: string; refreshToken?: string; expiresAtMs: number }> => {
-  const response = await fetchWithTimeout(
-    `${restBase}/auth/login`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
-    },
-    12_000,
-  );
-  if (!response.ok) {
-    throw new Error(`Auth login failed (${response.status})`);
-  }
-  const json = (await response.json()) as { accessToken?: string };
-  if (!json?.accessToken) {
-    throw new Error("Auth login response missing accessToken");
-  }
-  return {
-    accessToken: json.accessToken,
-    refreshToken: extractRefreshToken(response.headers),
-    expiresAtMs: decodeJwtExpMs(json.accessToken) ?? Date.now() + 5 * 60 * 1000,
-  };
-};
-
-const refreshAccessToken = async (
-  restBase: string,
-  refreshToken: string,
-): Promise<{ accessToken: string; refreshToken?: string; expiresAtMs: number }> => {
-  const response = await fetchWithTimeout(
-    `${restBase}/auth/refresh`,
-    {
-      method: "POST",
-      headers: {
-        Cookie: `RefreshToken=${refreshToken}`,
-      },
-    },
-    10_000,
-  );
-  if (!response.ok) {
-    throw new Error(`Auth refresh failed (${response.status})`);
-  }
-  const json = (await response.json()) as { accessToken?: string };
-  if (!json?.accessToken) {
-    throw new Error("Auth refresh response missing accessToken");
-  }
-  return {
-    accessToken: json.accessToken,
-    refreshToken: extractRefreshToken(response.headers) ?? refreshToken,
-    expiresAtMs: decodeJwtExpMs(json.accessToken) ?? Date.now() + 5 * 60 * 1000,
-  };
-};
-
-const buildAuthHeaders = async (config: any): Promise<Record<string, string> | undefined> => {
-  const restBaseRaw = config?.uns?.rest;
-  const email = config?.uns?.email;
-  const password = config?.uns?.password;
-  if (typeof restBaseRaw !== "string" || typeof email !== "string" || typeof password !== "string") {
-    return undefined;
-  }
-
-  const restBase = normalizeBaseUrl(restBaseRaw);
-  const cacheMatchesConfig = tokenCache?.restBase === restBase && tokenCache?.email === email;
-  if (cacheMatchesConfig && tokenCache && isTokenFresh(tokenCache.expiresAtMs)) {
-    return { Authorization: `Bearer ${tokenCache.accessToken}` };
-  }
-
-  if (cacheMatchesConfig && tokenCache?.refreshToken) {
-    const refreshToken = tokenCache.refreshToken;
-    try {
-      const refreshed = await withRetry(
-        "Refresh UNS auth token",
-        async () => await refreshAccessToken(restBase, refreshToken),
-        {
-          attempts: 2,
-          baseDelayMs: 200,
-          maxDelayMs: 1200,
-          shouldRetry: isRetryableNetworkError,
-          onRetry: ({ delayMs, error }) => {
-            logger.warn(`Auth refresh retry in ${delayMs}ms: ${errorMessage(error)}`);
-          },
-        },
-      );
-      tokenCache = {
-        restBase,
-        email,
-        accessToken: refreshed.accessToken,
-        refreshToken: refreshed.refreshToken,
-        expiresAtMs: refreshed.expiresAtMs,
-      };
-      return { Authorization: `Bearer ${refreshed.accessToken}` };
-    } catch {
-      tokenCache = null;
-    }
-  }
-
-  try {
-    const loggedIn = await withRetry(
-      "Login for UNS auth token",
-      async () => await loginForTokens(restBase, email, password),
-      {
-        attempts: 2,
-        baseDelayMs: 200,
-        maxDelayMs: 1200,
-        shouldRetry: isRetryableNetworkError,
-        onRetry: ({ delayMs, error }) => {
-          logger.warn(`Auth login retry in ${delayMs}ms: ${errorMessage(error)}`);
-        },
-      },
-    );
-    tokenCache = {
-      restBase,
-      email,
-      accessToken: loggedIn.accessToken,
-      refreshToken: loggedIn.refreshToken,
-      expiresAtMs: loggedIn.expiresAtMs,
-    };
-    return { Authorization: `Bearer ${loggedIn.accessToken}` };
-  } catch (error) {
-    logger.warn(`Continuing GraphQL request without auth token: ${errorMessage(error)}`);
-    return undefined;
-  }
+const buildAuthHeaders = async (config: { uns?: { token?: unknown } }): Promise<Record<string, string> | undefined> => {
+  const provider = new ServiceTokenProvider({
+    configToken: typeof config.uns?.token === "string" ? config.uns.token : undefined,
+    fallback: legacyAuthFallback,
+  });
+  const token = await provider.getAccessToken();
+  return token ? { Authorization: `Bearer ${token}` } : undefined;
 };
 
 export class ActiveUnsTopics {
@@ -322,10 +147,7 @@ export class ActiveUnsTopics {
           maxDelayMs: 3000,
           shouldRetry: (error) => {
             const status = (error as any)?.response?.status;
-            if (status === 401 || status === 403) {
-              tokenCache = null;
-              return true;
-            }
+            if (status === 401 || status === 403) return true;
             return isRetryableNetworkError(error);
           },
           onRetry: ({ attempt, delayMs, error }) => {

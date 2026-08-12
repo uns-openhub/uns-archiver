@@ -25,14 +25,22 @@ QuestDB table mappings back to the UNS infrastructure.
 
 ```bash
 pnpm install
-cp config-example.json config.json
-export UNS_PASSWORD='your-controller-password'
+cp config-local.json config.json
+# Direct development only; keep the machine token in untracked .env.
+export UNS_SERVICE_TOKEN='your-development-machine-token'
 pnpm run dev
 ```
 
-Edit `config.json` for your UNS endpoints, MQTT hosts, QuestDB connection, and topic
-filters. The controller credentials are used to discover the active topic registry;
-the password example is resolved from `UNS_PASSWORD` and is not stored in the file.
+`config-local.json` is the local OpenHub container profile: the RTT child process
+reaches its controller on `localhost:3200`, while MQTT and QuestDB use the Compose
+service names `mosquitto` and `questdb`. `input` inherits the full MQTT connection
+from `infra`, so it is unnecessary unless it intentionally overrides a broker setting.
+
+Controller authentication resolves in this order: the controller-managed
+`UNS_SERVICE_TOKEN_FILE`, direct-development `UNS_SERVICE_TOKEN`, `uns.token`, then
+the legacy `uns.email`/`uns.password` fallback. The first three options avoid storing
+a user password in `config.json`; use the legacy fallback only to bootstrap or replace
+a development machine token. `config-example.json` is the generic host-based template.
 
 The control API must use either `uns.jwksWellKnownUrl` or `UNS_API_JWT_SECRET`.
 JWKS is preferred when the archiver runs alongside UNS OpenHub.

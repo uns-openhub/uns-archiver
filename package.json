@@ -1,6 +1,6 @@
 {
   "name": "uns-archiver",
-  "version": "5.2.2",
+  "version": "5.2.3",
   "description": "UNS OpenHub add-on that archives UNS data and table packets to QuestDB.",
   "private": true,
   "license": "MIT",
@@ -26,7 +26,7 @@
     "build": "pnpm run clean && tsc -p tsconfig.json",
     "verify": "pnpm run test && pnpm run typecheck && pnpm run build",
     "start": "node --env-file-if-exists=.env dist/index.js",
-    "dev": "tsx watch src/index.ts",
+    "dev": "node --env-file-if-exists=.env ./node_modules/tsx/dist/cli.mjs watch src/index.ts",
     "generate-config-schema": "node ./node_modules/@uns-kit/core/dist/tools/generate-config-schema.js",
     "generate-codegen": "graphql-code-generator --require dotenv/config --config codegen.ts",
     "refresh-uns": "node ./node_modules/@uns-kit/core/dist/tools/refresh-uns.js",
@@ -34,8 +34,8 @@
   },
   "dependencies": {
     "@questdb/nodejs-client": "^4.2.0",
-    "@uns-kit/api": "^3.0.7",
-    "@uns-kit/core": "^3.0.7",
+    "@uns-kit/api": "^3.0.9",
+    "@uns-kit/core": "^3.0.9",
     "dotenv": "^17.4.2",
     "zod": "^4.4.3"
   },
