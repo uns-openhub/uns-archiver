@@ -9,10 +9,11 @@
     "kidWellKnownUrl": "http://localhost:3200/api/.well-known/kid",
     "supervisor": {
       "enabled": false
-    }
+    },
+    "env": "dev"
   },
   "infra": {
-    "host": "localhost"
+    "host": "mosquitto"
   },
   "archiver": {
     "inactiveBufferMax": 2000,
@@ -20,7 +21,7 @@
     "traceIngest": false
   },
   "questdb": {
-    "configurationString": "http::addr=localhost:9000;auto_flush=on",
+    "configurationString": "http::addr=questdb:9000;auto_flush=on",
     "dataStorage": [
       {
         "tablePrefix": "uns_enterprise",
