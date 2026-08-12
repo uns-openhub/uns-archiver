@@ -3,7 +3,10 @@ import {
   ConfigFile,
   logger,
   mqttChannelParameters,
+  registerService,
   resolveMqttChannel,
+  ServiceTokenProvider,
+  UnsClient,
   type IApiProxyOptions,
 } from "@uns-kit/core";
 import UnsMqttProxy from "@uns-kit/core/uns-mqtt/uns-mqtt-proxy.js";
@@ -405,6 +408,13 @@ try {
   logger.error(`Failed to refresh active topics on startup: ${reason.message}`);
 }
 
+if (isControllerManagedRuntime()) {
+  if (!apiProxy) {
+    throw new Error("UNS Archiver did not start its API runtime, so it cannot register with the controller.");
+  }
+  await registerArchiverService();
+}
+
 setInterval(async () => {
   await refreshActiveTopics();
 }, TOPICS_REFRESH_INTERVAL);
@@ -465,6 +475,38 @@ async function getPackageInfo(): Promise<{ name: string; version: string }> {
     pkgInfo = { name: "uns-archiver", version: "0.0.0" };
   }
   return pkgInfo;
+}
+
+function isControllerManagedRuntime(): boolean {
+  return Boolean(process.env.RTT_NODE?.trim() && process.env.RTT_INSTANCE_ID?.trim());
+}
+
+async function registerArchiverService(): Promise<void> {
+  if (!isControllerManagedRuntime()) return;
+
+  const controllerRestUrl = typeof config.uns?.rest === "string" ? config.uns.rest.trim() : "";
+  if (!controllerRestUrl) {
+    throw new Error("Controller-managed UNS Archiver requires config.uns.rest for service registration.");
+  }
+
+  const packageInfo = await getPackageInfo();
+  const registration = await registerService({
+    client: new UnsClient(controllerRestUrl, {
+      tokenProvider: new ServiceTokenProvider({
+        configToken: typeof config.uns?.token === "string" ? config.uns.token : undefined,
+      }),
+    }),
+    service: {
+      id: "uns-archiver",
+      version: packageInfo.version,
+      capabilities: ["history", "questdb-mapping", "graph-data"],
+      healthContract: "service-metadata-v1",
+      processName: config.uns.processName,
+    },
+  });
+  if (registration) {
+    logger.info(`Registered controller-managed service ${registration.service.rttNode}/${registration.service.instanceId}.`);
+  }
 }
 
 async function reloadConfig(): Promise<{ dataStorageChanged: boolean }> {
