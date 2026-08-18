@@ -1991,9 +1991,24 @@
           "type": "object",
           "properties": {
             "configurationString": {
+              "description": "Legacy QuestDB ILP connection string. Prefer url, username, and password for production secrets.",
               "type": "string",
-              "minLength": 1,
-              "description": "Connection string passed to QuestDB HTTP ingest"
+              "minLength": 1
+            },
+            "url": {
+              "description": "QuestDB HTTP endpoint used with the structured credential form (for example https://questdb.example:9000).",
+              "type": "string",
+              "format": "uri"
+            },
+            "username": {
+              "description": "QuestDB username used with questdb.url. Store as a secret reference in production.",
+              "type": "string",
+              "minLength": 1
+            },
+            "password": {
+              "description": "QuestDB password used with questdb.url. Store as a secret reference in production.",
+              "type": "string",
+              "minLength": 1
             },
             "dataStorage": {
               "minItems": 1,
@@ -2091,7 +2106,6 @@
             }
           },
           "required": [
-            "configurationString",
             "dataStorage"
           ]
         }

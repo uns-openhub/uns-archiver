@@ -31,8 +31,23 @@ export const projectExtrasSchema = z.object({
   questdb: z.object({
     configurationString: z
       .string()
-      .min(1, "QuestDB configuration string is required")
-      .describe("Connection string passed to QuestDB HTTP ingest"),
+      .min(1, "questdb.configurationString must not be empty")
+      .optional()
+      .describe("Legacy QuestDB ILP connection string. Prefer url, username, and password for production secrets."),
+    url: z
+      .url("questdb.url must be an absolute URL")
+      .optional()
+      .describe("QuestDB HTTP endpoint used with the structured credential form (for example https://questdb.example:9000)."),
+    username: z
+      .string()
+      .min(1, "questdb.username must not be empty")
+      .optional()
+      .describe("QuestDB username used with questdb.url. Store as a secret reference in production."),
+    password: z
+      .string()
+      .min(1, "questdb.password must not be empty")
+      .optional()
+      .describe("QuestDB password used with questdb.url. Store as a secret reference in production."),
     dataStorage: z
       .array(
         z.object({
@@ -80,6 +95,22 @@ export const projectExtrasSchema = z.object({
         }),
       )
       .min(1, "At least one QuestDB data storage target is required"),
+  }).superRefine((value, context) => {
+    if (value.configurationString) {
+      if (value.url || value.username || value.password) {
+        context.addIssue({
+          code: "custom",
+          message: "Use either questdb.configurationString or questdb.url with username and password, not both.",
+        });
+      }
+      return;
+    }
+    if (!value.url || !value.username || !value.password) {
+      context.addIssue({
+        code: "custom",
+        message: "QuestDB requires configurationString or url, username, and password.",
+      });
+    }
   }),
 });
 

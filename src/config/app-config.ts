@@ -164,8 +164,14 @@ export interface ProjectAppConfig {
         traceIngest?: boolean | undefined;
     } | undefined;
     questdb: {
-        /** Connection string passed to QuestDB HTTP ingest */
-        configurationString: string;
+        /** Legacy QuestDB ILP connection string. Prefer url, username, and password for production secrets. */
+        configurationString?: string | undefined;
+        /** QuestDB HTTP endpoint used with the structured credential form (for example https://questdb.example:9000). */
+        url?: string | undefined;
+        /** QuestDB username used with questdb.url. Store as a secret reference in production. */
+        username?: string | undefined;
+        /** QuestDB password used with questdb.url. Store as a secret reference in production. */
+        password?: string | undefined;
         dataStorage: {
             /** Prefix used when naming QuestDB tables for this topic */
             tablePrefix: string;

@@ -78,6 +78,12 @@ QuestDB table prefix:
 }
 ```
 
+Existing installations may keep `questdb.configurationString`. New production
+instances should use separate `questdb.url`, `questdb.username`, and
+`questdb.password` values so credentials can be resolved independently from a
+secret manager. The Archiver builds the QuestDB ILP connection in memory and
+publishes only the credential-free endpoint in its table-mapping metadata.
+
 `config.json`, `.env`, the event queue, and active-topic cache are intentionally
 ignored by Git.
 
