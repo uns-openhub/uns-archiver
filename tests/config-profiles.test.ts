@@ -6,6 +6,10 @@ import { fileURLToPath } from "node:url";
 import { composeConfigSchema } from "@uns-kit/core/uns-config/schema-tools.js";
 import { unsCoreSchema } from "@uns-kit/core/uns-config/uns-core-schema.js";
 import { projectExtrasSchema } from "../src/config/project.config.extension.js";
+import {
+  resolveQuestDbConfigurationString,
+  resolveQuestDbPublicConfigurationString,
+} from "../src/config/questdb-connection.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const schema = composeConfigSchema(unsCoreSchema, projectExtrasSchema).strict();
@@ -29,4 +33,49 @@ test("configuration profiles are schema-valid and topology-specific", () => {
     assert.equal("email" in config.uns, false);
     assert.equal("password" in config.uns, false);
   }
+});
+
+test("structured QuestDB credentials are schema-valid and stay out of published metadata", () => {
+  const config = {
+    uns: {
+      graphql: "http://localhost:3200/graphql",
+      rest: "http://localhost:3200/api",
+      processName: "uns-archiver",
+      env: "prod",
+    },
+    infra: { host: "mqtt" },
+    questdb: {
+      url: "https://questdb.example:9000",
+      username: "archiver",
+      password: "not-for-metadata",
+      dataStorage: [{ tablePrefix: "uns_enterprise", topic: "enterprise/#" }],
+    },
+  };
+
+  const result = schema.safeParse(config);
+  assert.equal(result.success, true, result.success ? "" : result.error.message);
+  assert.equal(
+    resolveQuestDbConfigurationString(config.questdb),
+    "https::addr=questdb.example:9000;username=archiver;password=not-for-metadata;auto_flush=on",
+  );
+  const metadata = resolveQuestDbPublicConfigurationString(config.questdb);
+  assert.equal(metadata, "https::addr=questdb.example:9000;auto_flush=on");
+  assert.equal(metadata?.includes("not-for-metadata"), false);
+  assert.equal(metadata?.includes("username="), false);
+});
+
+test("QuestDB requires one complete connection form", () => {
+  const profile = JSON.parse(fs.readFileSync(path.join(repoRoot, "config-production.json"), "utf8"));
+  delete profile.questdb.configurationString;
+  profile.questdb.url = "https://questdb.example:9000";
+  profile.questdb.username = "archiver";
+  const result = schema.safeParse(profile);
+  assert.equal(result.success, false);
+});
+
+test("legacy QuestDB mapping metadata strips embedded credentials", () => {
+  const metadata = resolveQuestDbPublicConfigurationString({
+    configurationString: "http::addr=questdb.example:9000;username=archiver;password=not-for-metadata;auto_flush=on",
+  });
+  assert.equal(metadata, "http::addr=questdb.example:9000;auto_flush=on");
 });

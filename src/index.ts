@@ -23,6 +23,10 @@ import { UnsPacket } from "@uns-kit/core/uns/uns-packet.js";
 import { QuestDBWriter, type QuestDbDependencyHealth } from "./writers/questDbWriter.js";
 import { NonRetryableError } from "./errors.js";
 import { buildQuestDbTableName } from "./questdb-table-name.js";
+import {
+  resolveQuestDbConfigurationString,
+  resolveQuestDbPublicConfigurationString,
+} from "./config/questdb-connection.js";
 import { CircuitBreaker, errorMessage, isRetryableNetworkError, withRetry } from "./resilience.js";
 let pkgInfo: { name: string; version: string } | null = null;
 
@@ -194,8 +198,9 @@ const CONTROL_OBJECT_TYPE: string = "service";
 const CONTROL_OBJECT_ID: string = config.uns?.processName ?? "uns-archiver";
 
 // Initialize QuestDB ILP sender for data ingestion
-const questDbOutput = await Sender.fromConfig(config.questdb.configurationString);
-const questDbWriter = new QuestDBWriter(questDbOutput, config.questdb.configurationString);
+const questDbConfigurationString = resolveQuestDbConfigurationString(config.questdb);
+const questDbOutput = await Sender.fromConfig(questDbConfigurationString);
+const questDbWriter = new QuestDBWriter(questDbOutput, questDbConfigurationString);
 
 async function refreshQuestDbHealth(): Promise<QuestDbDependencyHealth> {
   latestQuestDbHealth = await questDbWriter.checkHealth();
@@ -567,7 +572,7 @@ async function publishQuestDbMapping() {
       version: pkg.version,
       processName: config.uns?.processName ?? "uns-archiver",
       questdb: {
-        configurationString: config.questdb?.configurationString,
+        configurationString: resolveQuestDbPublicConfigurationString(config.questdb),
       },
       mappings,
       updatedAt: new Date().toISOString(),
