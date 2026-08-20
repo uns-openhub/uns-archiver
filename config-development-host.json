@@ -21,7 +21,12 @@
     "traceIngest": false
   },
   "questdb": {
-    "configurationString": "http::addr=localhost:9000;auto_flush=on",
+    "configurationString": "http::addr=localhost:9000;auto_flush=off",
+    "batch": {
+      "flushIntervalMs": 1000,
+      "maxRows": 256,
+      "maxPendingRows": 2048
+    },
     "dataStorage": [
       {
         "tablePrefix": "uns_enterprise",

@@ -56,10 +56,10 @@ test("structured QuestDB credentials are schema-valid and stay out of published 
   assert.equal(result.success, true, result.success ? "" : result.error.message);
   assert.equal(
     resolveQuestDbConfigurationString(config.questdb),
-    "https::addr=questdb.example:9000;username=archiver;password=not-for-metadata;auto_flush=on",
+    "https::addr=questdb.example:9000;username=archiver;password=not-for-metadata;auto_flush=off",
   );
   const metadata = resolveQuestDbPublicConfigurationString(config.questdb);
-  assert.equal(metadata, "https::addr=questdb.example:9000;auto_flush=on");
+  assert.equal(metadata, "https::addr=questdb.example:9000;auto_flush=off");
   assert.equal(metadata?.includes("not-for-metadata"), false);
   assert.equal(metadata?.includes("username="), false);
 });
@@ -95,8 +95,21 @@ test("QuestDB requires one complete connection form", () => {
 });
 
 test("legacy QuestDB mapping metadata strips embedded credentials", () => {
-  const metadata = resolveQuestDbPublicConfigurationString({
+  const config = {
     configurationString: "http::addr=questdb.example:9000;username=archiver;password=not-for-metadata;auto_flush=on",
-  });
-  assert.equal(metadata, "http::addr=questdb.example:9000;auto_flush=on");
+  };
+  assert.equal(
+    resolveQuestDbConfigurationString(config),
+    "http::addr=questdb.example:9000;username=archiver;password=not-for-metadata;auto_flush=off",
+  );
+  const metadata = resolveQuestDbPublicConfigurationString(config);
+  assert.equal(metadata, "http::addr=questdb.example:9000;auto_flush=off");
+});
+
+test("QuestDB batching rejects an impossible pending-row limit", () => {
+  const profile = JSON.parse(fs.readFileSync(path.join(repoRoot, "config-production.json"), "utf8"));
+  profile.questdb.batch = { maxRows: 256, maxPendingRows: 255 };
+
+  const result = schema.safeParse(profile);
+  assert.equal(result.success, false);
 });

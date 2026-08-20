@@ -11,6 +11,11 @@ import {
   canonicalTableColumnEntries,
   type CanonicalTableColumnEntry,
 } from "./table-columns.js";
+import {
+  QuestDbIlpBatcher,
+  type QuestDbBatchConfig,
+  type QuestDbBatchDiagnostics,
+} from "./questdb-ilp-batcher.js";
 
 
 type QuestDbExecConfig = {
@@ -73,22 +78,36 @@ export class QuestDBWriter {
   });
   private readonly traceIngest =
     process.env.UNS_ARCHIVER_TRACE === "1" || process.env.UNS_ARCHIVER_TRACE_INGEST === "1";
+  private readonly batcher: QuestDbIlpBatcher;
 
-  private async traceQuery(sql: string): Promise<string | null> {
-    if (!this.traceIngest) return null;
-    if (!this.questDbExecConfig) return null;
-    try {
-      const url = this.buildExecQueryUrl(sql);
-      const res = await fetch(url, { headers: this.questDbExecConfig.headers });
-      if (!res.ok) return `QuestDB exec failed (${res.status})`;
-      return await res.text();
-    } catch (err) {
-      return `QuestDB exec error: ${err instanceof Error ? err.message : String(err)}`;
-    }
-  }
-
-  constructor(private readonly questDbOutput: Sender, configurationString?: string) {
+  constructor(
+    private readonly questDbOutput: Sender,
+    configurationString?: string,
+    batchConfig?: QuestDbBatchConfig,
+  ) {
     this.questDbExecConfig = parseHttpExecConfig(configurationString);
+    this.batcher = new QuestDbIlpBatcher(
+      {
+        flush: async () =>
+          await this.ilpCircuit.execute(async () => await this.questDbOutput.flush()),
+        reset: () => this.resetSenderBuffer(),
+        shouldRetry: (error) => this.isRetryableIlpError(error),
+        onRetry: ({ attempt, delayMs, error, rows }) => {
+          logger.warn(
+            `QuestDB ILP batch retry for ${rows} rows (attempt ${attempt}) in ${delayMs}ms: ${errorMessage(error)}`,
+          );
+        },
+        onFlush: ({ rows, durationMs }) => {
+          logger.debug(`QuestDB ILP batch flushed rows=${rows} durationMs=${durationMs}.`);
+        },
+        onFailure: ({ rows, durationMs, error }) => {
+          logger.error(
+            `QuestDB ILP batch failed rows=${rows} durationMs=${durationMs}: ${errorMessage(error)}`,
+          );
+        },
+      },
+      batchConfig,
+    );
   }
 
   async checkHealth(): Promise<QuestDbDependencyHealth> {
@@ -142,7 +161,16 @@ export class QuestDBWriter {
 
   // Add a public method to close the questDbOutput connection
   async close() {
+    await this.batcher.close();
     await this.questDbOutput.close();
+  }
+
+  configureBatch(config?: QuestDbBatchConfig): void {
+    this.batcher.configure(config);
+  }
+
+  getBatchDiagnostics(): QuestDbBatchDiagnostics {
+    return this.batcher.snapshot();
   }
 
   // Method to handle UnsPacketData
@@ -442,24 +470,6 @@ export class QuestDBWriter {
         }
         await this.performWindowDeleteOnce(tableName, topicTag, windowStart, windowEnd, time, ingestMode);
         await builder.at(time, "ms");
-
-        if (this.traceIngest) {
-          try {
-            await this.questDbOutput.flush();
-          } catch (err) {
-            logger.warn(`[trace][questdb] flush failed: ${err instanceof Error ? err.message : String(err)}`);
-          }
-
-          // QuestDB commit visibility for ILP can lag slightly; wait a moment so follow-up /exec sees the row.
-          await new Promise((resolve) => setTimeout(resolve, 50));
-
-          const topicEscaped = topicTag.replace(/'/g, "''");
-          const countSql = `select count() as c, min(time) as minTime, max(time) as maxTime from ${tableName} where topic='${topicEscaped}'`;
-          const countRes = await this.traceQuery(countSql);
-          if (countRes) {
-            logger.info(`[trace][questdb] after_write ${countSql} -> ${countRes.replace(/\\s+/g, " ").trim()}`);
-          }
-        }
       });
     }
   }
@@ -553,41 +563,29 @@ export class QuestDBWriter {
     writeFn: () => Promise<void>,
   ): Promise<void> {
     const previous = this.pendingWrites.get(tableName) ?? Promise.resolve();
+    let writeCompletion: Promise<void> | undefined;
     const job = previous
       .catch(() => undefined)
       .then(async () => {
         await this.ensureTable(tableName, ingestMode, kind, columns);
-        await this.safeWrite(writeFn);
+        // Keep table setup/submission ordered, but do not make this table's
+        // admission queue wait for the shared sender to flush. The batcher
+        // itself serializes all row construction and bounds accepted rows.
+        writeCompletion = this.safeWrite(writeFn);
       });
 
-    // Store a version that never rejects to keep the chain alive for future writes.
+    // Store only setup/submission work so a slow flush cannot create an
+    // unbounded per-table promise chain ahead of the bounded batcher.
     this.pendingWrites.set(tableName, job.catch(() => undefined));
     await job;
+    if (!writeCompletion) {
+      throw new Error(`QuestDB write for ${tableName} was not submitted.`);
+    }
+    await writeCompletion;
   }
 
-  private async safeWrite(writeFn: () => Promise<void>): Promise<void> {
-    try {
-      await withRetry(
-        "QuestDB ILP write",
-        async () =>
-          await this.ilpCircuit.execute(async () => {
-            await writeFn();
-          }),
-        {
-          attempts: 3,
-          baseDelayMs: 120,
-          maxDelayMs: 1200,
-          shouldRetry: (error) => this.isRetryableIlpError(error),
-          onRetry: ({ attempt, delayMs, error }) => {
-            logger.warn(`QuestDB ILP write retry (attempt ${attempt}) in ${delayMs}ms: ${errorMessage(error)}`);
-          },
-        },
-      );
-      await this.questDbOutput.flush();
-    } catch (err) {
-      this.resetSenderBuffer();
-      throw err;
-    }
+  private safeWrite(writeFn: () => Promise<void>): Promise<void> {
+    return this.batcher.enqueue(writeFn);
   }
 
   private async ensureTable(
@@ -773,15 +771,7 @@ export class QuestDBWriter {
   }
 
   private resetSenderBuffer() {
-    const buf = (this.questDbOutput as any)?.buffer;
-    if (!buf) return;
-    if (typeof buf.reset === "function") {
-      buf.reset();
-      return;
-    }
-    if (typeof buf.startNewRow === "function") {
-      buf.startNewRow();
-    }
+    this.questDbOutput.reset();
   }
 
   // Legacy helpers removed: table ingestion requires explicit `columns` with types.
