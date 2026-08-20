@@ -160,6 +160,12 @@ export interface ProjectAppConfig {
         inactiveBufferMax?: number | undefined;
         /** Max age (ms) for buffered inactive-topic events before spilling to ./event_storage (default 300000 = 5min). */
         inactiveBufferMaxAgeMs?: number | undefined;
+        /** Maximum active MQTT events retained in memory while QuestDB is being written (default 256). Excess events are immediately persisted to ./event_storage. */
+        ingestQueueMaxEvents?: number | undefined;
+        /** Maximum combined payload size in bytes retained by the active ingest queue (default 16777216 = 16 MiB). Excess events are immediately persisted to ./event_storage. */
+        ingestQueueMaxBytes?: number | undefined;
+        /** Maximum concurrent QuestDB ingest operations (default 1). Increase only after measuring QuestDB throughput and memory behavior. */
+        ingestConcurrency?: number | undefined;
         /** Enable ingest/buffer trace logs. Equivalent to setting UNS_ARCHIVER_TRACE=1 or UNS_ARCHIVER_TRACE_INGEST=1. */
         traceIngest?: boolean | undefined;
     } | undefined;
