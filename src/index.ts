@@ -201,7 +201,11 @@ const CONTROL_OBJECT_ID: string = config.uns?.processName ?? "uns-archiver";
 // Initialize QuestDB ILP sender for data ingestion
 const questDbConfigurationString = resolveQuestDbConfigurationString(config.questdb);
 const questDbOutput = await Sender.fromConfig(questDbConfigurationString);
-const questDbWriter = new QuestDBWriter(questDbOutput, questDbConfigurationString);
+const questDbWriter = new QuestDBWriter(
+  questDbOutput,
+  questDbConfigurationString,
+  config.questdb?.batch,
+);
 
 async function refreshQuestDbHealth(): Promise<QuestDbDependencyHealth> {
   latestQuestDbHealth = await questDbWriter.checkHealth();
@@ -517,6 +521,7 @@ async function reloadConfig(): Promise<{ dataStorageChanged: boolean }> {
   const updated = await ConfigFile.loadConfig();
   config = updated;
   refreshArchiverRuntimeSettings();
+  questDbWriter.configureBatch(config.questdb?.batch);
   const previousDataStorage = JSON.stringify(previous?.questdb?.dataStorage ?? []);
   const updatedDataStorage = JSON.stringify(updated.questdb?.dataStorage ?? []);
   return { dataStorageChanged: previousDataStorage !== updatedDataStorage };
@@ -786,6 +791,7 @@ async function handleApiGetEvent(event: any) {
         topicMetadataCount: Object.keys(topicMetadata ?? {}).length,
         paused: ingestionPaused,
         queuedEvents: await countStoredEvents(),
+        questDbBatch: questDbWriter.getBatchDiagnostics(),
         processedEventIdsSize: processedEventIds.size,
         lastTopicsRefreshAt: lastTopicsRefreshAt ? new Date(lastTopicsRefreshAt).toISOString() : null,
       });

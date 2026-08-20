@@ -57,6 +57,43 @@ export const projectExtrasSchema = z.object({
     password: nonEmptySecretValueSchema
       .optional()
       .describe("QuestDB password used with questdb.url. Store as a secret reference in production."),
+    batch: z
+      .object({
+        flushIntervalMs: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe(
+            "Maximum time a completed ILP row waits before a shared QuestDB flush (default 1000ms).",
+          ),
+        maxRows: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe(
+            "Number of ILP rows that trigger an immediate shared QuestDB flush (default 256).",
+          ),
+        maxPendingRows: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe(
+            "Maximum accepted ILP rows across the queued and flushing shared sender batch (default 2048). A full queue rejects new writes so the archiver can persist them to event storage.",
+          ),
+      })
+      .optional()
+      .superRefine((value, context) => {
+        if (value?.maxRows && value?.maxPendingRows && value.maxPendingRows < value.maxRows) {
+          context.addIssue({
+            code: "custom",
+            message: "questdb.batch.maxPendingRows must be greater than or equal to questdb.batch.maxRows.",
+          });
+        }
+      })
+      .describe("Bounded shared QuestDB ILP batching settings."),
     dataStorage: z
       .array(
         z.object({

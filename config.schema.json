@@ -2248,6 +2248,30 @@
                 }
               ]
             },
+            "batch": {
+              "description": "Bounded shared QuestDB ILP batching settings.",
+              "type": "object",
+              "properties": {
+                "flushIntervalMs": {
+                  "description": "Maximum time a completed ILP row waits before a shared QuestDB flush (default 1000ms).",
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "maxRows": {
+                  "description": "Number of ILP rows that trigger an immediate shared QuestDB flush (default 256).",
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "maxPendingRows": {
+                  "description": "Maximum accepted ILP rows across the queued and flushing shared sender batch (default 2048). A full queue rejects new writes so the archiver can persist them to event storage.",
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                }
+              }
+            },
             "dataStorage": {
               "minItems": 1,
               "type": "array",

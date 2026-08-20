@@ -244,6 +244,15 @@ export interface ProjectAppConfig {
             /** Fallback value when the secret is missing and optional resolution is allowed. */
             default?: string | undefined;
         })) | undefined;
+        /** Bounded shared QuestDB ILP batching settings. */
+        batch?: {
+            /** Maximum time a completed ILP row waits before a shared QuestDB flush (default 1000ms). */
+            flushIntervalMs?: number | undefined;
+            /** Number of ILP rows that trigger an immediate shared QuestDB flush (default 256). */
+            maxRows?: number | undefined;
+            /** Maximum accepted ILP rows across the queued and flushing shared sender batch (default 2048). A full queue rejects new writes so the archiver can persist them to event storage. */
+            maxPendingRows?: number | undefined;
+        } | undefined;
         dataStorage: {
             /** Prefix used when naming QuestDB tables for this topic */
             tablePrefix: string;

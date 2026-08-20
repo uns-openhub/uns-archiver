@@ -84,6 +84,30 @@ instances should use separate `questdb.url`, `questdb.username`, and
 secret manager. The Archiver builds the QuestDB ILP connection in memory and
 publishes only the credential-free endpoint in its table-mapping metadata.
 
+### QuestDB ILP batching
+
+The Archiver owns QuestDB ILP transaction boundaries and forces the underlying
+sender to `auto_flush=off`. This avoids a separate HTTP/WAL transaction for
+each archived row while keeping every `writeUnsPacket()` promise pending until
+the batch containing that row has successfully flushed.
+
+The committed profiles start with this bounded configuration:
+
+```json
+"batch": {
+  "flushIntervalMs": 1000,
+  "maxRows": 256,
+  "maxPendingRows": 2048
+}
+```
+
+At the observed steady rate of about 78 rows/s, a one-second interval normally
+reduces roughly 6.77 million daily row-level transactions to about 86,400 batch
+transactions (about 98.7% fewer). Traffic bursts flush at `maxRows`; a full
+`maxPendingRows` queue rejects the write so the existing archiver error path
+persists the event to `event_storage` rather than growing memory or marking it
+archived. These values should be measured before increasing them.
+
 `config.json`, `.env`, the event queue, and active-topic cache are intentionally
 ignored by Git.
 
