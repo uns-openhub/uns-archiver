@@ -1420,6 +1420,15 @@ async function cleanup() {
   if (mqttInput) {
     await mqttInput.stop();
   }
+  if (ingestQueue) {
+    const { pendingEvents, spillingEvents } = ingestQueue.snapshot();
+    if (pendingEvents > 0 || spillingEvents > 0) {
+      logger.info(
+        `Waiting for ${pendingEvents} queued ingest event(s) and ${spillingEvents} durable spill(s) before shutdown.`,
+      );
+    }
+    await ingestQueue.waitForIdle();
+  }
   if (questDbWriter) {
     await questDbWriter.close(); // Close the questDbOutput connection inside the QuestDBWriter
   }

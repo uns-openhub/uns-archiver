@@ -79,6 +79,48 @@ test("spills an item that would exceed the byte limit", async () => {
   assert.equal(queue.snapshot().overflowSpilled, 1);
 });
 
+test("waits for active ingest and durable spills before shutdown completes", async () => {
+  const activeIngest = deferred();
+  const durableSpill = deferred();
+  const queue = new BoundedIngestQueue<string>({
+    maxPendingEvents: 1,
+    maxPendingBytes: 20,
+    concurrency: 1,
+    process: async () => {
+      await activeIngest.promise;
+    },
+    spill: async () => {
+      await durableSpill.promise;
+    },
+  });
+
+  assert.equal(
+    queue.enqueue({ id: "active", value: "active", bytes: 5 }),
+    "queued",
+  );
+  assert.equal(
+    queue.enqueue({ id: "spill", value: "spill", bytes: 5 }),
+    "spilled",
+  );
+
+  const idle = queue.waitForIdle();
+  let completed = false;
+  void idle.then(() => {
+    completed = true;
+  });
+
+  await Promise.resolve();
+  assert.equal(completed, false);
+
+  activeIngest.resolve();
+  await Promise.resolve();
+  assert.equal(completed, false);
+
+  durableSpill.resolve();
+  await idle;
+  assert.equal(completed, true);
+});
+
 test("persists an unexpected live-processing failure and releases queue capacity", async () => {
   const spills: Array<{ value: string; reason: string }> = [];
   const queue = new BoundedIngestQueue<string>({
