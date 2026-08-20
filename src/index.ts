@@ -30,6 +30,13 @@ import {
 import { CircuitBreaker, errorMessage, isRetryableNetworkError, withRetry } from "./resilience.js";
 import { canonicalizeTopics, subscriptionDelta } from "./subscription-state.js";
 import { BoundedIngestQueue } from "./bounded-ingest-queue.js";
+import { drainArchiverForShutdown } from "./archiver-shutdown.js";
+import { resolveEventDeduplicationDisposition } from "./event-deduplication.js";
+import { StoredEventReplay } from "./stored-event-replay.js";
+import {
+  hasStoredReplayLiveHeadroom,
+  resolveStoredReplayLimits,
+} from "./stored-replay-limits.js";
 let pkgInfo: { name: string; version: string } | null = null;
 
 
@@ -48,13 +55,6 @@ const QUESTDB_HEALTHCHECK_INTERVAL = 30000; // 30 seconds
 function sanitizeTopicName(topic: string): string {
   return typeof topic === "string" && topic.endsWith("/") ? topic.slice(0, -1) : topic;
 }
-
-const sanitizeReason = (value: string): string =>
-  value
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, 48) || "unknown";
 
 function filterSubsumes(broaderFilter: string, narrowerFilter: string): boolean {
   const broader = broaderFilter.split("/");
@@ -144,9 +144,15 @@ let apiProxy: any | undefined;
 let apiRestartScheduled = false;
 let ingestionPaused = false;
 let lastTopicsRefreshAt: number | null = null;
-let storedEventsRunInProgress = false;
+let activeTopicsReady = false;
+let shuttingDown = false;
+let cleanupPromise: Promise<void> | null = null;
 let latestQuestDbHealth: QuestDbDependencyHealth | null = null;
 let serviceMetadataPublisher: UnsProxyProcessWithApi | undefined;
+let activeTopics: string[] = [];
+let topicMetadata: Record<string, UnsTopicMetadata> = {};
+let subscribedTopicFilters: string[] = [];
+let activeTopicsRefreshPromise: Promise<void> | null = null;
 
 const mqttPublishCircuit = new CircuitBreaker("mqtt-mapping-publish", {
   failureThreshold: 5,
@@ -159,6 +165,7 @@ type ArchiverRuntimeConfig = {
   ingestQueueMaxEvents?: number;
   ingestQueueMaxBytes?: number;
   ingestConcurrency?: number;
+  storedReplayBatchSize?: number;
   traceIngest?: boolean;
 };
 
@@ -171,6 +178,7 @@ let inactiveBufferMaxAgeMs = 5 * 60 * 1000;
 let ingestQueueMaxEvents = 256;
 let ingestQueueMaxBytes = 16 * 1024 * 1024;
 let ingestConcurrency = 1;
+let storedReplayBatchSize = 64;
 let ingestQueue: BoundedIngestQueue<{ topic: any; message: any }> | undefined;
 
 const resolvePositiveInteger = (value: unknown, fallback: number): number =>
@@ -198,6 +206,10 @@ const refreshArchiverRuntimeSettings = () => {
   ingestConcurrency = resolvePositiveInteger(
     cfg?.ingestConcurrency ?? Number(process.env.UNS_ARCHIVER_INGEST_CONCURRENCY),
     1,
+  );
+  storedReplayBatchSize = resolvePositiveInteger(
+    cfg?.storedReplayBatchSize ?? Number(process.env.UNS_ARCHIVER_STORED_REPLAY_BATCH_SIZE),
+    64,
   );
   ingestQueue?.configure({
     maxPendingEvents: ingestQueueMaxEvents,
@@ -280,6 +292,26 @@ ingestQueue = new BoundedIngestQueue({
       `Failed to persist ${reason} ingest overflow for topic '${String(item.value.topic ?? "")}': ${errorMessage(error)}`,
     );
   },
+});
+
+const storedReplay = new StoredEventReplay({
+  eventStorageDirectory: EVENT_STORAGE_DIR,
+  failedStorageDirectory: FAILED_EVENT_STORAGE_DIR,
+  eventFileExtension: EVENT_FILE_EXTENSION,
+  processingExtension: EVENT_PROCESSING_EXTENSION,
+  isReady: () => activeTopicsReady,
+  isStopping: () => shuttingDown,
+  hasLiveHeadroom: () =>
+    hasStoredReplayLiveHeadroom(
+      ingestQueue?.snapshot(),
+      ingestQueueMaxEvents,
+      ingestQueueMaxBytes,
+    ),
+  getLimits: () =>
+    resolveStoredReplayLimits(ingestQueueMaxEvents, storedReplayBatchSize),
+  processEvent: async (event) =>
+    await processEvent(event as { topic: any; message: any }, true),
+  onError: (message) => logger.warn(`Stored event replay: ${message}.`),
 });
 
 async function refreshQuestDbHealth(): Promise<QuestDbDependencyHealth> {
@@ -477,19 +509,18 @@ setInterval(() => {
   logger.info("Cleared processed events cache.");
 }, 3600000); // Every hour
 
-await processStoredEvents();
+await storedReplay.recoverStaleProcessing();
 
-let activeTopics: string[] = [];
-let topicMetadata: Record<string, UnsTopicMetadata> = {};
-let subscribedTopicFilters: string[] = [];
-let activeTopicsRefreshPromise: Promise<void> | null = null;
 try {
   const active = await ActiveUnsTopics.getActiveUnsTopics();
   activeTopics = canonicalizeTopics(active.topics);
   topicMetadata = active.metaByTopic;
   rebuildActiveTopicSet();
+  activeTopicsReady = true;
+  lastTopicsRefreshAt = Date.now();
   await subscribeToTopics(activeTopics);
   await setupApiProxy();
+  await processStoredEvents();
 } catch (error) {
   const reason = error instanceof Error ? error : new Error(String(error));
   logger.error(`Failed to refresh active topics on startup: ${reason.message}`);
@@ -861,11 +892,13 @@ async function handleApiGetEvent(event: any) {
       return;
     }
     if (path.endsWith("/topics")) {
+      const queuedEvents = await countStoredEvents();
       event.res.json({
         activeTopics,
         topicMetadataCount: Object.keys(topicMetadata ?? {}).length,
         paused: ingestionPaused,
-        queuedEvents: await countStoredEvents(),
+        queuedEvents,
+        storedReplay: storedReplay.diagnostics(queuedEvents),
         questDbBatch: questDbWriter.getBatchDiagnostics(),
         ingestQueue: ingestQueue?.snapshot(),
         processedEventIdsSize: processedEventIds.size,
@@ -980,14 +1013,14 @@ function refreshActiveTopics(): Promise<void> {
         rebuildActiveTopicSet();
         await subscribeToTopics(activeTopics);
         await flushInactiveBuffer();
-        // Also try to flush any previously spooled events from local storage.
-        await processStoredEvents();
       } else {
         topicMetadata = metaByTopic;
         rebuildActiveTopicSet();
         await flushInactiveBuffer();
       }
+      activeTopicsReady = true;
       lastTopicsRefreshAt = Date.now();
+      await processStoredEvents();
     } catch (error: any) {
       logger.error(`Failed to refresh active topics: ${error.message}`);
     }
@@ -1034,9 +1067,18 @@ async function processEvent(
       return true;
     }
 
-    // Best-effort de-duplication. Note: EventEmitter won't await async handlers, so identical messages
-    // can race; we guard with an inflight set.
-    if (processedEventIds.has(eventId) || inflightEventIds.has(eventId)) {
+    // A completed event can be discarded, but a stored event that overlaps an
+    // active live write must remain on disk until the in-flight write resolves.
+    const deduplication = resolveEventDeduplicationDisposition(
+      processedEventIds.has(eventId),
+      inflightEventIds.has(eventId),
+      fromStorage,
+    );
+    if (deduplication === "defer-inflight") {
+      logger.debug("Stored event replay deferred an event that is still in flight.");
+      return false;
+    }
+    if (deduplication === "skip-confirmed") {
       if (traceIngest) {
         logger.info(`[trace][ingest] dup_skip eventId=${eventId} topic='${String(inputTopic)}'`);
       } else {
@@ -1170,128 +1212,13 @@ async function ensureEventStorageDirectories(): Promise<void> {
   await fs.mkdir(FAILED_EVENT_STORAGE_DIR, { recursive: true });
 }
 
-async function lockStoredEventFile(
-  fileName: string,
-): Promise<{ originalFilePath: string; processingFilePath: string } | null> {
-  const originalFilePath = path.join(EVENT_STORAGE_DIR, fileName);
-  const processingFilePath = `${originalFilePath}.${process.pid}.${Date.now()}${EVENT_PROCESSING_EXTENSION}`;
-  try {
-    await fs.rename(originalFilePath, processingFilePath);
-    return { originalFilePath, processingFilePath };
-  } catch (error: any) {
-    if (error?.code === "ENOENT" || error?.code === "EPERM" || error?.code === "EACCES") {
-      return null;
-    }
-    throw error;
-  }
-}
-
-async function requeueProcessingFile(processingFilePath: string, originalFilePath: string): Promise<void> {
-  try {
-    await fs.rename(processingFilePath, originalFilePath);
-  } catch (error: any) {
-    const fallbackName = `${path.basename(originalFilePath, EVENT_FILE_EXTENSION)}-${Date.now()}${EVENT_FILE_EXTENSION}`;
-    const fallbackPath = path.join(EVENT_STORAGE_DIR, fallbackName);
-    try {
-      await fs.rename(processingFilePath, fallbackPath);
-      logger.warn(`Stored event lock rollback used fallback file name: ${fallbackName}`);
-    } catch (fallbackError: any) {
-      logger.error(`Failed to requeue stored event file ${processingFilePath}: ${fallbackError.message}`);
-      await moveProcessingFileToFailed(processingFilePath, "requeue_failed");
-    }
-  }
-}
-
-async function moveProcessingFileToFailed(processingFilePath: string, reason: string): Promise<void> {
-  const nowIso = new Date().toISOString().replace(/[:.]/g, "-");
-  const baseName = path.basename(processingFilePath);
-  const eventNameEnd = baseName.indexOf(EVENT_FILE_EXTENSION);
-  const eventBaseName =
-    eventNameEnd >= 0
-      ? baseName.slice(0, eventNameEnd + EVENT_FILE_EXTENSION.length)
-      : `${baseName}${EVENT_FILE_EXTENSION}`;
-  const failedName = `${eventBaseName}.${sanitizeReason(reason)}.${nowIso}`;
-  const failedPath = path.join(FAILED_EVENT_STORAGE_DIR, failedName);
-  try {
-    await ensureEventStorageDirectories();
-    await fs.rename(processingFilePath, failedPath);
-    logger.error(`Moved malformed stored event to ${failedPath}`);
-  } catch (error: any) {
-    logger.error(`Could not move stored event to failed folder: ${error.message}`);
-    await fs.unlink(processingFilePath).catch(() => undefined);
-  }
-}
-
 /**
- * Processes all stored events from the local filesystem.
+ * Processes a bounded disk batch when the active-topic registry is ready and
+ * the live MQTT queue still has its reserved headroom.
  */
-async function processStoredEvents() {
-  if (ingestionPaused) {
-    logger.info("Archiver paused; stored events remain queued.");
-    return;
-  }
-
-  if (ingestQueue && ingestQueue.snapshot().pendingEvents > 0) {
-    logger.debug("Stored event processor is waiting for the live ingest queue to drain.");
-    return;
-  }
-
-  if (storedEventsRunInProgress) {
-    logger.debug("Stored event processor is already running; skipping overlapping run.");
-    return;
-  }
-
-  storedEventsRunInProgress = true;
-  try {
-    await ensureEventStorageDirectories();
-
-    const files = await fs.readdir(EVENT_STORAGE_DIR);
-    const eventFiles = files
-      .filter((file) => path.extname(file) === EVENT_FILE_EXTENSION)
-      .sort();
-
-    if (eventFiles.length === 0) return;
-
-    for (const file of eventFiles) {
-      if (ingestQueue && ingestQueue.snapshot().pendingEvents > 0) {
-        logger.debug("Stored event processor yielded to live ingest work.");
-        break;
-      }
-      const lock = await lockStoredEventFile(file);
-      if (!lock) continue;
-
-      const { originalFilePath, processingFilePath } = lock;
-      let fileContent = "";
-      let mqttEvent: any = undefined;
-      try {
-        fileContent = await fs.readFile(processingFilePath, "utf-8");
-        mqttEvent = JSON.parse(fileContent);
-      } catch (error: any) {
-        logger.error(`Could not parse stored event ${file}: ${error.message}`);
-        logger.error(`Raw file content: ${fileContent}`);
-        await moveProcessingFileToFailed(processingFilePath, "parse_error");
-        continue;
-      }
-
-      try {
-        const success = await processEvent(mqttEvent, true);
-        if (success) {
-          await fs.unlink(processingFilePath);
-          logger.debug(`Processed stored event ${file}`);
-        } else {
-          logger.error(`Failed to process stored event ${file}, will retry later`);
-          await requeueProcessingFile(processingFilePath, originalFilePath);
-        }
-      } catch (error: any) {
-        logger.error(`Could not process stored event ${file}: ${error.message}`);
-        await requeueProcessingFile(processingFilePath, originalFilePath);
-      }
-    }
-  } catch (error: any) {
-    logger.error(`Stored event processing loop failed: ${error.message ?? String(error)}`);
-  } finally {
-    storedEventsRunInProgress = false;
-  }
+async function processStoredEvents(): Promise<void> {
+  if (ingestionPaused || shuttingDown) return;
+  await storedReplay.run();
 }
 
 /**
@@ -1317,13 +1244,7 @@ function hashString(str: string): string {
 }
 
 async function countStoredEvents(): Promise<number> {
-  try {
-    await ensureEventStorageDirectories();
-    const files = await fs.readdir(EVENT_STORAGE_DIR);
-    return files.filter((file) => path.extname(file) === EVENT_FILE_EXTENSION).length;
-  } catch {
-    return 0;
-  }
+  return await storedReplay.countQueued();
 }
 
 /**
@@ -1417,23 +1338,39 @@ function saveEventToFileSync(mqttEvent: any, eventId: string): void {
  * Cleans up resources before exiting the application.
  */
 async function cleanup() {
-  if (mqttInput) {
-    await mqttInput.stop();
+  if (!cleanupPromise) {
+    shuttingDown = true;
+    cleanupPromise = drainArchiverForShutdown({
+      stopMqtt: async () => {
+        if (mqttInput) await mqttInput.stop();
+      },
+      waitForLiveIngest: async () => {
+        if (!ingestQueue) return;
+        const { pendingEvents, spillingEvents } = ingestQueue.snapshot();
+        if (pendingEvents > 0 || spillingEvents > 0) {
+          logger.info(
+            `Waiting for ${pendingEvents} queued ingest event(s) and ${spillingEvents} durable spill(s) before shutdown.`,
+          );
+        }
+        await ingestQueue.waitForIdle();
+      },
+      waitForStoredReplay: async () => {
+        await storedReplay.waitForIdle();
+      },
+      closeQuestDb: async () => {
+        await questDbWriter.close();
+      },
+    });
   }
-  if (ingestQueue) {
-    const { pendingEvents, spillingEvents } = ingestQueue.snapshot();
-    if (pendingEvents > 0 || spillingEvents > 0) {
-      logger.info(
-        `Waiting for ${pendingEvents} queued ingest event(s) and ${spillingEvents} durable spill(s) before shutdown.`,
-      );
-    }
-    await ingestQueue.waitForIdle();
+
+  try {
+    await cleanupPromise;
+    logger.warn("Cleanup completed. Exiting application.");
+    process.exit(0);
+  } catch (error) {
+    logger.error(`Cleanup failed: ${errorMessage(error)}`);
+    process.exit(1);
   }
-  if (questDbWriter) {
-    await questDbWriter.close(); // Close the questDbOutput connection inside the QuestDBWriter
-  }
-  logger.warn("Cleanup completed. Exiting application.");
-  process.exit(0);
 }
 
 process.on("SIGINT", cleanup);

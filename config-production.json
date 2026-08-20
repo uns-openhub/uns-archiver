@@ -21,6 +21,7 @@
     "ingestQueueMaxEvents": 256,
     "ingestQueueMaxBytes": 16777216,
     "ingestConcurrency": 1,
+    "storedReplayBatchSize": 64,
     "traceIngest": false
   },
   "questdb": {

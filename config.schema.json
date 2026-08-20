@@ -1999,6 +1999,12 @@
               "exclusiveMinimum": 0,
               "maximum": 9007199254740991
             },
+            "storedReplayBatchSize": {
+              "description": "Maximum durable event-storage files handled in one fair replay pass (default 64). Replay keeps 25% of live ingest capacity reserved for new MQTT traffic.",
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
             "traceIngest": {
               "description": "Enable ingest/buffer trace logs. Equivalent to setting UNS_ARCHIVER_TRACE=1 or UNS_ARCHIVER_TRACE_INGEST=1.",
               "type": "boolean"
