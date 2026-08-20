@@ -206,6 +206,11 @@
               "default": true,
               "type": "boolean"
             },
+            "handoverProtocol": {
+              "description": "Opt-in controller-correlated MQTT handover protocol.",
+              "type": "string",
+              "const": "correlated-v1"
+            },
             "supervisor": {
               "type": "object",
               "properties": {
