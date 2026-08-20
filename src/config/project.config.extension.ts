@@ -57,6 +57,14 @@ export const projectExtrasSchema = z.object({
         .describe(
           "Maximum concurrent QuestDB ingest operations (default 1). Increase only after measuring QuestDB throughput and memory behavior.",
         ),
+      storedReplayBatchSize: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          "Maximum durable event-storage files handled in one fair replay pass (default 64). Replay keeps 25% of live ingest capacity reserved for new MQTT traffic.",
+        ),
       traceIngest: z
         .boolean()
         .optional()

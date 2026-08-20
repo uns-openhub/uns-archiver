@@ -166,6 +166,8 @@ export interface ProjectAppConfig {
         ingestQueueMaxBytes?: number | undefined;
         /** Maximum concurrent QuestDB ingest operations (default 1). Increase only after measuring QuestDB throughput and memory behavior. */
         ingestConcurrency?: number | undefined;
+        /** Maximum durable event-storage files handled in one fair replay pass (default 64). Replay keeps 25% of live ingest capacity reserved for new MQTT traffic. */
+        storedReplayBatchSize?: number | undefined;
         /** Enable ingest/buffer trace logs. Equivalent to setting UNS_ARCHIVER_TRACE=1 or UNS_ARCHIVER_TRACE_INGEST=1. */
         traceIngest?: boolean | undefined;
     } | undefined;

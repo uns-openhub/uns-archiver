@@ -32,6 +32,7 @@ test("configuration profiles are schema-valid and topology-specific", () => {
     assert.equal("output" in config, false);
     assert.equal("email" in config.uns, false);
     assert.equal("password" in config.uns, false);
+    assert.equal(config.archiver.storedReplayBatchSize, 64);
   }
 });
 
@@ -109,6 +110,14 @@ test("legacy QuestDB mapping metadata strips embedded credentials", () => {
 test("QuestDB batching rejects an impossible pending-row limit", () => {
   const profile = JSON.parse(fs.readFileSync(path.join(repoRoot, "config-production.json"), "utf8"));
   profile.questdb.batch = { maxRows: 256, maxPendingRows: 255 };
+
+  const result = schema.safeParse(profile);
+  assert.equal(result.success, false);
+});
+
+test("stored replay batch size must be a positive integer", () => {
+  const profile = JSON.parse(fs.readFileSync(path.join(repoRoot, "config-production.json"), "utf8"));
+  profile.archiver.storedReplayBatchSize = 0;
 
   const result = schema.safeParse(profile);
   assert.equal(result.success, false);
