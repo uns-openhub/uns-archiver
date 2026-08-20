@@ -18,6 +18,9 @@
   "archiver": {
     "inactiveBufferMax": 2000,
     "inactiveBufferMaxAgeMs": 300000,
+    "ingestQueueMaxEvents": 256,
+    "ingestQueueMaxBytes": 16777216,
+    "ingestConcurrency": 1,
     "traceIngest": false
   },
   "questdb": {

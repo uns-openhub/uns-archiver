@@ -64,6 +64,15 @@ password.
 The control API must use either `uns.jwksWellKnownUrl` or `UNS_API_JWT_SECRET`.
 JWKS is preferred when the archiver runs alongside UNS OpenHub.
 
+### Ingest backpressure
+
+`archiver.ingestQueueMaxEvents` (default `256`) and
+`archiver.ingestQueueMaxBytes` (default `16777216`, 16 MiB) bound live MQTT
+payloads while QuestDB is slow. Excess messages are synchronously persisted to
+`./event_storage` and replayed after live ingest is clear; they are not kept in
+an unbounded in-memory promise backlog. `archiver.ingestConcurrency` defaults
+to `1`; only raise it after measuring QuestDB and process memory under load.
+
 ## Configuration
 
 The complete configuration contract is documented in
