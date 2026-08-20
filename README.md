@@ -75,13 +75,17 @@ promise backlog. `archiver.ingestConcurrency` defaults to `1`; only raise it
 after measuring QuestDB and process memory under load.
 
 `archiver.storedReplayBatchSize` defaults to `64`. The replay interval remains
-one minute, but a pass processes up to that many files concurrently enough to
-fill the shared QuestDB ILP batcher. Replay concurrency is derived from live
-capacity (up to one eighth of `ingestQueueMaxEvents`) and never starts while
-the live queue has consumed its 25% reserve. On startup, stale `.processing`
-files from a stopped process are returned to the durable `.event` queue before
-replay begins. The authenticated `topics` control status exposes aggregate
-stored-replay counters and last-run diagnostics without exposing event content.
+one minute, but a pass processes up to that many files concurrently so their
+writes share the existing QuestDB ILP batcher. With single-row events and no
+live traffic joining the same sender, this is roughly one flush per 64 replayed
+events instead of one flush per event; table shape, live traffic, and
+`questdb.batch.maxRows` determine the actual ratio. Replay concurrency is
+derived from live capacity (up to one eighth of `ingestQueueMaxEvents`) and
+never starts while the live queue has consumed its 25% reserve. On startup,
+stale `.processing` files from a stopped process are returned to the durable
+`.event` queue before replay begins. The authenticated `topics` control status
+exposes aggregate stored-replay counters and last-run diagnostics without
+exposing event content.
 
 ## Configuration
 
