@@ -185,7 +185,6 @@ export class QuestDbIlpBatcher {
       this.timer = undefined;
       void this.flushPending();
     }, this.config.flushIntervalMs);
-    this.timer.unref?.();
   }
 
   private clearTimer(): void {
