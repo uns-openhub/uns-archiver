@@ -12,7 +12,7 @@ import {
 import UnsMqttProxy from "@uns-kit/core/uns-mqtt/uns-mqtt-proxy.js";
 import { Sender } from "@questdb/nodejs-client";
 import { createHash } from "crypto";
-import { promises as fs } from "fs";
+import { existsSync, mkdirSync, promises as fs, renameSync, unlinkSync, writeFileSync } from "fs";
 import * as path from "path";
 import { buildServiceApiInteractions, type UnsProxyProcessWithApi } from "@uns-kit/api";
 
@@ -29,6 +29,7 @@ import {
 } from "./config/questdb-connection.js";
 import { CircuitBreaker, errorMessage, isRetryableNetworkError, withRetry } from "./resilience.js";
 import { canonicalizeTopics, subscriptionDelta } from "./subscription-state.js";
+import { BoundedIngestQueue } from "./bounded-ingest-queue.js";
 let pkgInfo: { name: string; version: string } | null = null;
 
 
@@ -155,6 +156,9 @@ const mqttPublishCircuit = new CircuitBreaker("mqtt-mapping-publish", {
 type ArchiverRuntimeConfig = {
   inactiveBufferMax?: number;
   inactiveBufferMaxAgeMs?: number;
+  ingestQueueMaxEvents?: number;
+  ingestQueueMaxBytes?: number;
+  ingestConcurrency?: number;
   traceIngest?: boolean;
 };
 
@@ -164,6 +168,13 @@ const resolveTraceIngestFromEnv = (): boolean =>
 let traceIngestEnabled = resolveTraceIngestFromEnv();
 let inactiveBufferMaxEvents = 2000;
 let inactiveBufferMaxAgeMs = 5 * 60 * 1000;
+let ingestQueueMaxEvents = 256;
+let ingestQueueMaxBytes = 16 * 1024 * 1024;
+let ingestConcurrency = 1;
+let ingestQueue: BoundedIngestQueue<{ topic: any; message: any }> | undefined;
+
+const resolvePositiveInteger = (value: unknown, fallback: number): number =>
+  typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
 
 const refreshArchiverRuntimeSettings = () => {
   const cfg: ArchiverRuntimeConfig | undefined = (config as any)?.archiver;
@@ -176,6 +187,23 @@ const refreshArchiverRuntimeSettings = () => {
     typeof cfg?.inactiveBufferMaxAgeMs === "number"
       ? cfg.inactiveBufferMaxAgeMs
       : Number(process.env.UNS_ARCHIVER_INACTIVE_BUFFER_MAX_AGE_MS ?? 5 * 60 * 1000);
+  ingestQueueMaxEvents = resolvePositiveInteger(
+    cfg?.ingestQueueMaxEvents ?? Number(process.env.UNS_ARCHIVER_INGEST_QUEUE_MAX_EVENTS),
+    256,
+  );
+  ingestQueueMaxBytes = resolvePositiveInteger(
+    cfg?.ingestQueueMaxBytes ?? Number(process.env.UNS_ARCHIVER_INGEST_QUEUE_MAX_BYTES),
+    16 * 1024 * 1024,
+  );
+  ingestConcurrency = resolvePositiveInteger(
+    cfg?.ingestConcurrency ?? Number(process.env.UNS_ARCHIVER_INGEST_CONCURRENCY),
+    1,
+  );
+  ingestQueue?.configure({
+    maxPendingEvents: ingestQueueMaxEvents,
+    maxPendingBytes: ingestQueueMaxBytes,
+    concurrency: ingestConcurrency,
+  });
 };
 
 refreshArchiverRuntimeSettings();
@@ -184,6 +212,9 @@ logger.info(
 );
 logger.info(
   `Archiver configured topic filters: ${(config.questdb?.dataStorage ?? []).map((s: any) => s?.topic).filter(Boolean).join(", ") || "(none)"}`,
+);
+logger.info(
+  `Archiver ingest queue: maxEvents=${ingestQueueMaxEvents}, maxBytes=${ingestQueueMaxBytes}, concurrency=${ingestConcurrency}.`,
 );
 const normalizeBasePrefix = (value: string | undefined | null): string => {
   if (!value) return "";
@@ -202,6 +233,50 @@ const CONTROL_OBJECT_ID: string = config.uns?.processName ?? "uns-archiver";
 const questDbConfigurationString = resolveQuestDbConfigurationString(config.questdb);
 const questDbOutput = await Sender.fromConfig(questDbConfigurationString);
 const questDbWriter = new QuestDBWriter(questDbOutput, questDbConfigurationString);
+
+const estimateMqttEventBytes = (mqttEvent: { topic: any; message: any }): number => {
+  const topic = String(mqttEvent.topic ?? "");
+  const message = mqttEvent.message;
+  const messageBytes = Buffer.isBuffer(message)
+    ? message.length
+    : Buffer.byteLength(typeof message === "string" ? message : JSON.stringify(message ?? ""));
+  return Buffer.byteLength(topic) + messageBytes;
+};
+
+// MQTT delivery must remain cheap even while QuestDB is slow or unavailable.
+// The bounded queue limits only live work; it delegates excess work to the
+// existing durable event-storage replay path.
+ingestQueue = new BoundedIngestQueue({
+  maxPendingEvents: ingestQueueMaxEvents,
+  maxPendingBytes: ingestQueueMaxBytes,
+  concurrency: ingestConcurrency,
+  process: async (item) => {
+    await processEvent(item.value);
+  },
+  spill: async (item, reason) => {
+    // Overflow spooling is intentionally synchronous. Starting an unbounded
+    // number of asynchronous fs writes would simply move the memory backlog
+    // from the ingest queue into libuv promises.
+    saveEventToFileSync(
+      {
+        ...item.value,
+        bufferReason: `ingest_${reason}`,
+        bufferedAt: new Date().toISOString(),
+      },
+      item.id,
+    );
+  },
+  onProcessError: (item, error) => {
+    logger.error(
+      `Unexpected ingest queue failure for topic '${String(item.value.topic ?? "")}': ${errorMessage(error)}`,
+    );
+  },
+  onSpillError: (item, reason, error) => {
+    logger.error(
+      `Failed to persist ${reason} ingest overflow for topic '${String(item.value.topic ?? "")}': ${errorMessage(error)}`,
+    );
+  },
+});
 
 async function refreshQuestDbHealth(): Promise<QuestDbDependencyHealth> {
   latestQuestDbHealth = await questDbWriter.checkHealth();
@@ -786,6 +861,7 @@ async function handleApiGetEvent(event: any) {
         topicMetadataCount: Object.keys(topicMetadata ?? {}).length,
         paused: ingestionPaused,
         queuedEvents: await countStoredEvents(),
+        ingestQueue: ingestQueue?.snapshot(),
         processedEventIdsSize: processedEventIds.size,
         lastTopicsRefreshAt: lastTopicsRefreshAt ? new Date(lastTopicsRefreshAt).toISOString() : null,
       });
@@ -853,8 +929,19 @@ async function subscribeToTopics(topics: string[]) {
         subscribeThrottlingDelay: 0,
       }
     );
-    mqttInput.event.on("input", async (mqttEvent) => {
-      await processEvent(mqttEvent);
+    mqttInput.event.on("input", (mqttEvent) => {
+      try {
+        const eventId = generateEventId(mqttEvent);
+        ingestQueue!.enqueue({
+          id: eventId,
+          value: mqttEvent,
+          bytes: estimateMqttEventBytes(mqttEvent),
+        });
+      } catch (error) {
+        logger.error(`Failed to enqueue MQTT event: ${errorMessage(error)}`);
+        const eventId = generateEventId(mqttEvent);
+        void saveEventToFile(mqttEvent, eventId);
+      }
     });
     subscribedTopicFilters = desiredTopics;
     await publishQuestDbMapping();
@@ -1138,6 +1225,11 @@ async function processStoredEvents() {
     return;
   }
 
+  if (ingestQueue && ingestQueue.snapshot().pendingEvents > 0) {
+    logger.debug("Stored event processor is waiting for the live ingest queue to drain.");
+    return;
+  }
+
   if (storedEventsRunInProgress) {
     logger.debug("Stored event processor is already running; skipping overlapping run.");
     return;
@@ -1155,6 +1247,10 @@ async function processStoredEvents() {
     if (eventFiles.length === 0) return;
 
     for (const file of eventFiles) {
+      if (ingestQueue && ingestQueue.snapshot().pendingEvents > 0) {
+        logger.debug("Stored event processor yielded to live ingest work.");
+        break;
+      }
       const lock = await lockStoredEventFile(file);
       if (!lock) continue;
 
@@ -1270,6 +1366,44 @@ async function saveEventToFile(
   } catch (error: any) {
     logger.error(`Failed to save event to ${finalFileName}: ${error.message}`);
     await fs.unlink(tempFileName).catch(() => undefined);
+  }
+}
+
+function saveEventToFileSync(mqttEvent: any, eventId: string): void {
+  const eventWithId = { id: eventId, ...mqttEvent };
+  const uniqueFileName = `${eventId}${EVENT_FILE_EXTENSION}`;
+  const finalFileName = path.join(EVENT_STORAGE_DIR, uniqueFileName);
+  const tempFileName = path.join(
+    EVENT_STORAGE_DIR,
+    `${eventId}.${process.pid}.${Date.now()}.tmp`,
+  );
+
+  try {
+    mkdirSync(EVENT_STORAGE_DIR, { recursive: true });
+    mkdirSync(FAILED_EVENT_STORAGE_DIR, { recursive: true });
+    if (existsSync(finalFileName)) {
+      logger.debug(`Event already queued on disk: ${uniqueFileName}`);
+      return;
+    }
+    writeFileSync(tempFileName, JSON.stringify(eventWithId), { encoding: "utf-8", flag: "wx" });
+    try {
+      renameSync(tempFileName, finalFileName);
+    } catch (error: any) {
+      if (error?.code === "EEXIST") {
+        unlinkSync(tempFileName);
+        logger.debug(`Event already queued on disk during rename: ${uniqueFileName}`);
+        return;
+      }
+      throw error;
+    }
+    logger.debug(`Event saved successfully to ${finalFileName}`);
+  } catch (error: any) {
+    try {
+      if (existsSync(tempFileName)) unlinkSync(tempFileName);
+    } catch {
+      // The next overflow or stored-event pass can safely continue.
+    }
+    throw error;
   }
 }
 

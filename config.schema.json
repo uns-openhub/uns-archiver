@@ -1981,6 +1981,24 @@
               "exclusiveMinimum": 0,
               "maximum": 9007199254740991
             },
+            "ingestQueueMaxEvents": {
+              "description": "Maximum active MQTT events retained in memory while QuestDB is being written (default 256). Excess events are immediately persisted to ./event_storage.",
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "ingestQueueMaxBytes": {
+              "description": "Maximum combined payload size in bytes retained by the active ingest queue (default 16777216 = 16 MiB). Excess events are immediately persisted to ./event_storage.",
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "ingestConcurrency": {
+              "description": "Maximum concurrent QuestDB ingest operations (default 1). Increase only after measuring QuestDB throughput and memory behavior.",
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
             "traceIngest": {
               "description": "Enable ingest/buffer trace logs. Equivalent to setting UNS_ARCHIVER_TRACE=1 or UNS_ARCHIVER_TRACE_INGEST=1.",
               "type": "boolean"

@@ -33,6 +33,30 @@ export const projectExtrasSchema = z.object({
         .describe(
           "Max age (ms) for buffered inactive-topic events before spilling to ./event_storage (default 300000 = 5min).",
         ),
+      ingestQueueMaxEvents: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          "Maximum active MQTT events retained in memory while QuestDB is being written (default 256). Excess events are immediately persisted to ./event_storage.",
+        ),
+      ingestQueueMaxBytes: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          "Maximum combined payload size in bytes retained by the active ingest queue (default 16777216 = 16 MiB). Excess events are immediately persisted to ./event_storage.",
+        ),
+      ingestConcurrency: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          "Maximum concurrent QuestDB ingest operations (default 1). Increase only after measuring QuestDB throughput and memory behavior.",
+        ),
       traceIngest: z
         .boolean()
         .optional()
