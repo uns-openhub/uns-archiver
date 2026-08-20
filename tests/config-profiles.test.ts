@@ -64,6 +64,27 @@ test("structured QuestDB credentials are schema-valid and stay out of published 
   assert.equal(metadata?.includes("username="), false);
 });
 
+test("structured QuestDB credentials accept Infisical references", () => {
+  const config = {
+    uns: {
+      graphql: "http://localhost:3200/graphql",
+      rest: "http://localhost:3200/api",
+      processName: "uns-archiver",
+      env: "prod",
+    },
+    infra: { host: "mqtt" },
+    questdb: {
+      url: { provider: "infisical", path: "/db/qdb", key: "QDB_HTTP_URL", environment: "prod" },
+      username: { provider: "infisical", path: "/db/qdb", key: "QDB_USER", environment: "prod" },
+      password: { provider: "infisical", path: "/db/qdb", key: "QDB_PASS", environment: "prod" },
+      dataStorage: [{ tablePrefix: "uns_enterprise", topic: "enterprise/#" }],
+    },
+  };
+
+  const result = schema.safeParse(config);
+  assert.equal(result.success, true, result.success ? "" : result.error.message);
+});
+
 test("QuestDB requires one complete connection form", () => {
   const profile = JSON.parse(fs.readFileSync(path.join(repoRoot, "config-production.json"), "utf8"));
   delete profile.questdb.configurationString;

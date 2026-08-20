@@ -1997,18 +1997,256 @@
             },
             "url": {
               "description": "QuestDB HTTP endpoint used with the structured credential form (for example https://questdb.example:9000).",
-              "type": "string",
-              "format": "uri"
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uri"
+                },
+                {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "provider": {
+                          "type": "string",
+                          "const": "env",
+                          "description": "Load the secret from an environment variable."
+                        },
+                        "key": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Name of the environment variable to read."
+                        },
+                        "optional": {
+                          "description": "Allow the variable to be absent without throwing during resolution.",
+                          "type": "boolean"
+                        },
+                        "default": {
+                          "description": "Fallback value when optional is true and the variable is missing.",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "provider",
+                        "key"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Secret placeholder resolved from process.env."
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "provider": {
+                          "type": "string",
+                          "const": "infisical",
+                          "description": "Load the secret from Infisical."
+                        },
+                        "path": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Secret folder path in Infisical, e.g. '/app/database'."
+                        },
+                        "key": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Secret key/name inside the given path."
+                        },
+                        "optional": {
+                          "description": "Allow the secret to be absent without throwing during resolution.",
+                          "type": "boolean"
+                        },
+                        "environment": {
+                          "description": "Infisical environment override (defaults to current mode if omitted).",
+                          "type": "string"
+                        },
+                        "projectId": {
+                          "description": "Optional Infisical project identifier when not using the default.",
+                          "type": "string"
+                        },
+                        "default": {
+                          "description": "Fallback value when the secret is missing and optional resolution is allowed.",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "provider",
+                        "path",
+                        "key"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Secret placeholder resolved from Infisical."
+                    }
+                  ]
+                }
+              ]
             },
             "username": {
               "description": "QuestDB username used with questdb.url. Store as a secret reference in production.",
-              "type": "string",
-              "minLength": 1
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "provider": {
+                          "type": "string",
+                          "const": "env",
+                          "description": "Load the secret from an environment variable."
+                        },
+                        "key": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Name of the environment variable to read."
+                        },
+                        "optional": {
+                          "description": "Allow the variable to be absent without throwing during resolution.",
+                          "type": "boolean"
+                        },
+                        "default": {
+                          "description": "Fallback value when optional is true and the variable is missing.",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "provider",
+                        "key"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Secret placeholder resolved from process.env."
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "provider": {
+                          "type": "string",
+                          "const": "infisical",
+                          "description": "Load the secret from Infisical."
+                        },
+                        "path": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Secret folder path in Infisical, e.g. '/app/database'."
+                        },
+                        "key": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Secret key/name inside the given path."
+                        },
+                        "optional": {
+                          "description": "Allow the secret to be absent without throwing during resolution.",
+                          "type": "boolean"
+                        },
+                        "environment": {
+                          "description": "Infisical environment override (defaults to current mode if omitted).",
+                          "type": "string"
+                        },
+                        "projectId": {
+                          "description": "Optional Infisical project identifier when not using the default.",
+                          "type": "string"
+                        },
+                        "default": {
+                          "description": "Fallback value when the secret is missing and optional resolution is allowed.",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "provider",
+                        "path",
+                        "key"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Secret placeholder resolved from Infisical."
+                    }
+                  ]
+                }
+              ]
             },
             "password": {
               "description": "QuestDB password used with questdb.url. Store as a secret reference in production.",
-              "type": "string",
-              "minLength": 1
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "provider": {
+                          "type": "string",
+                          "const": "env",
+                          "description": "Load the secret from an environment variable."
+                        },
+                        "key": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Name of the environment variable to read."
+                        },
+                        "optional": {
+                          "description": "Allow the variable to be absent without throwing during resolution.",
+                          "type": "boolean"
+                        },
+                        "default": {
+                          "description": "Fallback value when optional is true and the variable is missing.",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "provider",
+                        "key"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Secret placeholder resolved from process.env."
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "provider": {
+                          "type": "string",
+                          "const": "infisical",
+                          "description": "Load the secret from Infisical."
+                        },
+                        "path": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Secret folder path in Infisical, e.g. '/app/database'."
+                        },
+                        "key": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Secret key/name inside the given path."
+                        },
+                        "optional": {
+                          "description": "Allow the secret to be absent without throwing during resolution.",
+                          "type": "boolean"
+                        },
+                        "environment": {
+                          "description": "Infisical environment override (defaults to current mode if omitted).",
+                          "type": "string"
+                        },
+                        "projectId": {
+                          "description": "Optional Infisical project identifier when not using the default.",
+                          "type": "string"
+                        },
+                        "default": {
+                          "description": "Fallback value when the secret is missing and optional resolution is allowed.",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "provider",
+                        "path",
+                        "key"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Secret placeholder resolved from Infisical."
+                    }
+                  ]
+                }
+              ]
             },
             "dataStorage": {
               "minItems": 1,

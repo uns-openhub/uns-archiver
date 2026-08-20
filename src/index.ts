@@ -28,6 +28,7 @@ import {
   resolveQuestDbPublicConfigurationString,
 } from "./config/questdb-connection.js";
 import { CircuitBreaker, errorMessage, isRetryableNetworkError, withRetry } from "./resilience.js";
+import { canonicalizeTopics, subscriptionDelta } from "./subscription-state.js";
 let pkgInfo: { name: string; version: string } | null = null;
 
 
@@ -401,9 +402,11 @@ await processStoredEvents();
 
 let activeTopics: string[] = [];
 let topicMetadata: Record<string, UnsTopicMetadata> = {};
+let subscribedTopicFilters: string[] = [];
+let activeTopicsRefreshPromise: Promise<void> | null = null;
 try {
   const active = await ActiveUnsTopics.getActiveUnsTopics();
-  activeTopics = active.topics;
+  activeTopics = canonicalizeTopics(active.topics);
   topicMetadata = active.metaByTopic;
   rebuildActiveTopicSet();
   await subscribeToTopics(activeTopics);
@@ -432,12 +435,6 @@ setInterval(async () => {
   try {
     const { dataStorageChanged } = await reloadConfig();
     if (dataStorageChanged) {
-      if (mqttInput) {
-        const topicsToUnsubscribe = activeTopics.filter(Boolean);
-        if (topicsToUnsubscribe.length > 0) {
-          await mqttInput.unsubscribeAsync(topicsToUnsubscribe);
-        }
-      }
       await subscribeToTopics(activeTopics);
       await publishQuestDbMapping();
     }
@@ -859,46 +856,53 @@ async function subscribeToTopics(topics: string[]) {
     mqttInput.event.on("input", async (mqttEvent) => {
       await processEvent(mqttEvent);
     });
+    subscribedTopicFilters = desiredTopics;
     await publishQuestDbMapping();
   } else {
-    mqttInput.subscribeAsync(desiredTopics);
+    const delta = subscriptionDelta(subscribedTopicFilters, desiredTopics);
+    if (delta.unsubscribe.length > 0) {
+      mqttInput.unsubscribeAsync(delta.unsubscribe);
+    }
+    if (delta.subscribe.length > 0) {
+      mqttInput.subscribeAsync(delta.subscribe);
+    }
+    subscribedTopicFilters = delta.next;
   }
 }
 
 /**
  * Refreshes active topics and updates MQTT subscriptions if topics have changed.
  */
-async function refreshActiveTopics() {
-  try {
-    const { topics: newActiveTopics, metaByTopic } = await ActiveUnsTopics.getActiveUnsTopics();
-    if (JSON.stringify(newActiveTopics) !== JSON.stringify(activeTopics)) {
-      logger.warn("Active topics changed. Updating subscriptions...");
-      const oldActiveTopics = activeTopics;
-      activeTopics = newActiveTopics;
-      topicMetadata = metaByTopic;
-      rebuildActiveTopicSet();
-      lastTopicsRefreshAt = Date.now();
-      if (mqttInput) {
-        const topicsToUnsubscribe = oldActiveTopics.filter(Boolean);
-        if (topicsToUnsubscribe.length > 0) {
-          mqttInput.unsubscribeAsync(topicsToUnsubscribe);
-        }
+function refreshActiveTopics(): Promise<void> {
+  if (activeTopicsRefreshPromise) return activeTopicsRefreshPromise;
+
+  activeTopicsRefreshPromise = (async () => {
+    try {
+      const { topics, metaByTopic } = await ActiveUnsTopics.getActiveUnsTopics();
+      const newActiveTopics = canonicalizeTopics(topics);
+      if (newActiveTopics.join("\u0000") !== activeTopics.join("\u0000")) {
+        logger.info("Active topic registry changed. Updating active-topic gate and MQTT subscriptions.");
+        activeTopics = newActiveTopics;
+        topicMetadata = metaByTopic;
+        rebuildActiveTopicSet();
+        await subscribeToTopics(activeTopics);
+        await flushInactiveBuffer();
+        // Also try to flush any previously spooled events from local storage.
+        await processStoredEvents();
+      } else {
+        topicMetadata = metaByTopic;
+        rebuildActiveTopicSet();
+        await flushInactiveBuffer();
       }
-      await subscribeToTopics(activeTopics);
-      await flushInactiveBuffer();
-      // Also try to flush any previously spooled events from local storage.
-      await processStoredEvents();
-    } else {
-      topicMetadata = metaByTopic;
-      rebuildActiveTopicSet();
-      await flushInactiveBuffer();
-    }
-    if (!lastTopicsRefreshAt) {
       lastTopicsRefreshAt = Date.now();
+    } catch (error: any) {
+      logger.error(`Failed to refresh active topics: ${error.message}`);
     }
-  } catch (error: any) {
-    logger.error(`Failed to refresh active topics: ${error.message}`);
-  }
+  })().finally(() => {
+    activeTopicsRefreshPromise = null;
+  });
+
+  return activeTopicsRefreshPromise;
 }
 
 /**
