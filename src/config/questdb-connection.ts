@@ -1,11 +1,18 @@
+import type { SecretPlaceholder } from "@uns-kit/core/uns-config/secret-placeholders.js";
+
+type QuestDbSecretValue = string | SecretPlaceholder;
+
 export type QuestDbConnectionConfig = {
   configurationString?: string;
-  url?: string;
-  username?: string;
-  password?: string;
+  url?: QuestDbSecretValue;
+  username?: QuestDbSecretValue;
+  password?: QuestDbSecretValue;
 };
 
-const normalizeOptionalString = (value: string | undefined): string | undefined => {
+const normalizeOptionalString = (value: QuestDbSecretValue | undefined, field: string): string | undefined => {
+  if (value !== undefined && typeof value !== "string") {
+    throw new Error(`${field} secret reference was not resolved before QuestDB initialization`);
+  }
   const normalized = value?.trim();
   return normalized || undefined;
 };
@@ -37,12 +44,12 @@ const parseQuestDbUrl = (value: string): URL => {
  * for published mapping metadata.
  */
 export const resolveQuestDbConfigurationString = (config: QuestDbConnectionConfig): string => {
-  const configurationString = normalizeOptionalString(config.configurationString);
+  const configurationString = normalizeOptionalString(config.configurationString, "questdb.configurationString");
   if (configurationString) return configurationString;
 
-  const url = normalizeOptionalString(config.url);
-  const username = normalizeOptionalString(config.username);
-  const password = normalizeOptionalString(config.password);
+  const url = normalizeOptionalString(config.url, "questdb.url");
+  const username = normalizeOptionalString(config.username, "questdb.username");
+  const password = normalizeOptionalString(config.password, "questdb.password");
   if (!url || !username || !password) {
     throw new Error(
       "QuestDB requires either questdb.configurationString or questdb.url, questdb.username, and questdb.password",
@@ -59,7 +66,7 @@ export const resolveQuestDbConfigurationString = (config: QuestDbConnectionConfi
  * controller only needs the endpoint in order to associate table mappings.
  */
 export const resolveQuestDbPublicConfigurationString = (config: QuestDbConnectionConfig): string | undefined => {
-  const configurationString = normalizeOptionalString(config.configurationString);
+  const configurationString = normalizeOptionalString(config.configurationString, "questdb.configurationString");
   if (configurationString) {
     const parts = configurationString
       .split(";")
@@ -69,7 +76,7 @@ export const resolveQuestDbPublicConfigurationString = (config: QuestDbConnectio
     return parts.length ? parts.join(";") : undefined;
   }
 
-  const url = normalizeOptionalString(config.url);
+  const url = normalizeOptionalString(config.url, "questdb.url");
   if (!url) return undefined;
   const parsed = parseQuestDbUrl(url);
   const protocol = parsed.protocol.slice(0, -1);

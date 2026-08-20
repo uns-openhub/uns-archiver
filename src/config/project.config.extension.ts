@@ -1,4 +1,18 @@
 import { z } from "zod";
+import {
+  secretPlaceholderSchema,
+  secretValueSchema,
+} from "@uns-kit/core/uns-config/secret-placeholders.js";
+
+const nonEmptySecretValueSchema = secretValueSchema.refine(
+  (value) => typeof value !== "string" || value.trim().length > 0,
+  "QuestDB credential must not be empty",
+);
+
+const questDbUrlSchema = z.union([
+  z.url("questdb.url must be an absolute URL"),
+  secretPlaceholderSchema,
+]);
 
 export const projectExtrasSchema = z.object({
   archiver: z
@@ -34,18 +48,13 @@ export const projectExtrasSchema = z.object({
       .min(1, "questdb.configurationString must not be empty")
       .optional()
       .describe("Legacy QuestDB ILP connection string. Prefer url, username, and password for production secrets."),
-    url: z
-      .url("questdb.url must be an absolute URL")
+    url: questDbUrlSchema
       .optional()
       .describe("QuestDB HTTP endpoint used with the structured credential form (for example https://questdb.example:9000)."),
-    username: z
-      .string()
-      .min(1, "questdb.username must not be empty")
+    username: nonEmptySecretValueSchema
       .optional()
       .describe("QuestDB username used with questdb.url. Store as a secret reference in production."),
-    password: z
-      .string()
-      .min(1, "questdb.password must not be empty")
+    password: nonEmptySecretValueSchema
       .optional()
       .describe("QuestDB password used with questdb.url. Store as a secret reference in production."),
     dataStorage: z
