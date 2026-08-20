@@ -11,9 +11,10 @@ const deferred = () => {
 };
 
 const waitFor = async (condition: () => boolean): Promise<void> => {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
     if (condition()) return;
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
   }
   assert.fail("Timed out while waiting for shutdown work.");
 };
