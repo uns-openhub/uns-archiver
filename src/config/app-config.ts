@@ -170,6 +170,8 @@ export interface ProjectAppConfig {
         ingestConcurrency?: number | undefined;
         /** Maximum durable event-storage files handled in one fair replay pass (default 64). Replay keeps 25% of live ingest capacity reserved for new MQTT traffic. */
         storedReplayBatchSize?: number | undefined;
+        /** Delay in milliseconds between completed durable replay passes (default 5000). Lower values drain backlogs faster but add QuestDB load. */
+        storedReplayIntervalMs?: number | undefined;
         /** Enable ingest/buffer trace logs. Equivalent to setting UNS_ARCHIVER_TRACE=1 or UNS_ARCHIVER_TRACE_INGEST=1. */
         traceIngest?: boolean | undefined;
     } | undefined;

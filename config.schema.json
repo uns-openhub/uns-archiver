@@ -2010,6 +2010,12 @@
               "exclusiveMinimum": 0,
               "maximum": 9007199254740991
             },
+            "storedReplayIntervalMs": {
+              "description": "Delay in milliseconds between completed durable replay passes (default 5000). Lower values drain backlogs faster but add QuestDB load.",
+              "type": "integer",
+              "minimum": 250,
+              "maximum": 9007199254740991
+            },
             "traceIngest": {
               "description": "Enable ingest/buffer trace logs. Equivalent to setting UNS_ARCHIVER_TRACE=1 or UNS_ARCHIVER_TRACE_INGEST=1.",
               "type": "boolean"

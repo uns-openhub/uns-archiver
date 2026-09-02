@@ -33,6 +33,7 @@ test("configuration profiles are schema-valid and topology-specific", () => {
     assert.equal("email" in config.uns, false);
     assert.equal("password" in config.uns, false);
     assert.equal(config.archiver.storedReplayBatchSize, 64);
+    assert.equal(config.archiver.storedReplayIntervalMs, 5000);
   }
 });
 
@@ -118,6 +119,14 @@ test("QuestDB batching rejects an impossible pending-row limit", () => {
 test("stored replay batch size must be a positive integer", () => {
   const profile = JSON.parse(fs.readFileSync(path.join(repoRoot, "config-production.json"), "utf8"));
   profile.archiver.storedReplayBatchSize = 0;
+
+  const result = schema.safeParse(profile);
+  assert.equal(result.success, false);
+});
+
+test("stored replay interval rejects a busy-loop configuration", () => {
+  const profile = JSON.parse(fs.readFileSync(path.join(repoRoot, "config-production.json"), "utf8"));
+  profile.archiver.storedReplayIntervalMs = 249;
 
   const result = schema.safeParse(profile);
   assert.equal(result.success, false);

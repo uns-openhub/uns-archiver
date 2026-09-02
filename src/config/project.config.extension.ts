@@ -65,6 +65,14 @@ export const projectExtrasSchema = z.object({
         .describe(
           "Maximum durable event-storage files handled in one fair replay pass (default 64). Replay keeps 25% of live ingest capacity reserved for new MQTT traffic.",
         ),
+      storedReplayIntervalMs: z
+        .number()
+        .int()
+        .min(250)
+        .optional()
+        .describe(
+          "Delay in milliseconds between completed durable replay passes (default 5000). Lower values drain backlogs faster but add QuestDB load.",
+        ),
       traceIngest: z
         .boolean()
         .optional()

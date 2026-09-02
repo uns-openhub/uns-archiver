@@ -46,7 +46,6 @@ const EVENT_PROCESSING_EXTENSION = ".processing";
 const FAILED_EVENT_STORAGE_DIR = path.join(EVENT_STORAGE_DIR, "failed");
 const TOPICS_REFRESH_INTERVAL = 30000; // 30 seconds
 const CONFIG_REFRESH_INTERVAL = 45000; // 30 seconds
-const STORED_EVENTS_PROCESS_INTERVAL = 60000; // 1 minute
 const MAPPING_PUBLISH_INTERVAL = 60000; // 1 minute
 const PROCESSED_EVENTS_CACHE_SIZE = 10000; // Adjust as needed
 const API_HEALTHCHECK_INTERVAL = 60000; // 1 minute
@@ -166,6 +165,7 @@ type ArchiverRuntimeConfig = {
   ingestQueueMaxBytes?: number;
   ingestConcurrency?: number;
   storedReplayBatchSize?: number;
+  storedReplayIntervalMs?: number;
   traceIngest?: boolean;
 };
 
@@ -179,6 +179,7 @@ let ingestQueueMaxEvents = 256;
 let ingestQueueMaxBytes = 16 * 1024 * 1024;
 let ingestConcurrency = 1;
 let storedReplayBatchSize = 64;
+let storedReplayIntervalMs = 5_000;
 let ingestQueue: BoundedIngestQueue<{ topic: any; message: any }> | undefined;
 
 const resolvePositiveInteger = (value: unknown, fallback: number): number =>
@@ -210,6 +211,13 @@ const refreshArchiverRuntimeSettings = () => {
   storedReplayBatchSize = resolvePositiveInteger(
     cfg?.storedReplayBatchSize ?? Number(process.env.UNS_ARCHIVER_STORED_REPLAY_BATCH_SIZE),
     64,
+  );
+  storedReplayIntervalMs = Math.max(
+    250,
+    resolvePositiveInteger(
+      cfg?.storedReplayIntervalMs ?? Number(process.env.UNS_ARCHIVER_STORED_REPLAY_INTERVAL_MS),
+      5_000,
+    ),
   );
   ingestQueue?.configure({
     maxPendingEvents: ingestQueueMaxEvents,
@@ -537,9 +545,16 @@ setInterval(async () => {
   await refreshActiveTopics();
 }, TOPICS_REFRESH_INTERVAL);
 
-setInterval(async () => {
-  await processStoredEvents();
-}, STORED_EVENTS_PROCESS_INTERVAL);
+const scheduleStoredEventReplay = () => {
+  setTimeout(async () => {
+    try {
+      await processStoredEvents();
+    } finally {
+      if (!shuttingDown) scheduleStoredEventReplay();
+    }
+  }, storedReplayIntervalMs);
+};
+scheduleStoredEventReplay();
 
 setInterval(async () => {
   try {
