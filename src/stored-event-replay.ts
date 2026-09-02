@@ -94,10 +94,14 @@ export class StoredEventReplay {
 
   async countQueued(): Promise<number> {
     try {
-      const files = await fs.readdir(this.options.eventStorageDirectory);
-      return files.filter(
-        (file) => path.extname(file) === this.options.eventFileExtension,
-      ).length;
+      let count = 0;
+      const directory = await fs.opendir(this.options.eventStorageDirectory);
+      for await (const entry of directory) {
+        if (path.extname(entry.name) === this.options.eventFileExtension) {
+          count += 1;
+        }
+      }
+      return count;
     } catch (error: any) {
       if (error?.code === "ENOENT") return 0;
       this.recordError("stored-replay-count-failed");
@@ -113,49 +117,54 @@ export class StoredEventReplay {
       this.recordError("stored-replay-recovery-setup-failed");
       return;
     }
-    let files: string[];
+    let directory;
     try {
-      files = await fs.readdir(this.options.eventStorageDirectory);
+      directory = await fs.opendir(this.options.eventStorageDirectory);
     } catch {
       this.recordError("stored-replay-recovery-scan-failed");
       return;
     }
 
-    for (const fileName of files) {
-      if (!fileName.endsWith(this.options.processingExtension)) continue;
-      const parsed = this.parseProcessingFileName(fileName);
-      if (!parsed) {
-        this.failed += 1;
-        this.recordError("stored-replay-processing-name-invalid");
-        await this.moveUnrecognizedProcessingFileToFailed(fileName);
-        continue;
-      }
-      if (
-        parsed.ownerPid === this.currentProcessId ||
-        this.isProcessAlive(parsed.ownerPid)
-      ) {
-        continue;
-      }
-
-      const processingFilePath = path.join(
-        this.options.eventStorageDirectory,
-        fileName,
-      );
-      const originalFilePath = path.join(
-        this.options.eventStorageDirectory,
-        parsed.originalFileName,
-      );
-      try {
-        if (await this.pathExists(originalFilePath)) {
-          await fs.unlink(processingFilePath);
-        } else {
-          await fs.rename(processingFilePath, originalFilePath);
+    try {
+      for await (const entry of directory) {
+        const fileName = entry.name;
+        if (!fileName.endsWith(this.options.processingExtension)) continue;
+        const parsed = this.parseProcessingFileName(fileName);
+        if (!parsed) {
+          this.failed += 1;
+          this.recordError("stored-replay-processing-name-invalid");
+          await this.moveUnrecognizedProcessingFileToFailed(fileName);
+          continue;
         }
-        this.recoveredStaleProcessing += 1;
-      } catch {
-        this.failed += 1;
-        this.recordError("stored-replay-recovery-failed");
+        if (
+          parsed.ownerPid === this.currentProcessId ||
+          this.isProcessAlive(parsed.ownerPid)
+        ) {
+          continue;
+        }
+
+        const processingFilePath = path.join(
+          this.options.eventStorageDirectory,
+          fileName,
+        );
+        const originalFilePath = path.join(
+          this.options.eventStorageDirectory,
+          parsed.originalFileName,
+        );
+        try {
+          if (await this.pathExists(originalFilePath)) {
+            await fs.unlink(processingFilePath);
+          } else {
+            await fs.rename(processingFilePath, originalFilePath);
+          }
+          this.recoveredStaleProcessing += 1;
+        } catch {
+          this.failed += 1;
+          this.recordError("stored-replay-recovery-failed");
+        }
       }
+    } catch {
+      this.recordError("stored-replay-recovery-scan-failed");
     }
   }
 
@@ -180,12 +189,7 @@ export class StoredEventReplay {
     await this.ensureDirectories();
     let eventFiles: string[];
     try {
-      eventFiles = (await fs.readdir(this.options.eventStorageDirectory))
-        .filter(
-          (file) => path.extname(file) === this.options.eventFileExtension,
-        )
-        .sort()
-        .slice(0, this.resolveLimits().batchSize);
+      eventFiles = await this.selectQueuedFiles(this.resolveLimits().batchSize);
     } catch {
       this.recordError("stored-replay-scan-failed");
       return;
@@ -380,6 +384,19 @@ export class StoredEventReplay {
   private async ensureDirectories(): Promise<void> {
     await fs.mkdir(this.options.eventStorageDirectory, { recursive: true });
     await fs.mkdir(this.options.failedStorageDirectory, { recursive: true });
+  }
+
+  private async selectQueuedFiles(limit: number): Promise<string[]> {
+    const files: string[] = [];
+    const directory = await fs.opendir(this.options.eventStorageDirectory);
+    for await (const entry of directory) {
+      if (path.extname(entry.name) !== this.options.eventFileExtension) {
+        continue;
+      }
+      files.push(entry.name);
+      if (files.length >= limit) break;
+    }
+    return files;
   }
 
   private async pathExists(filePath: string): Promise<boolean> {
