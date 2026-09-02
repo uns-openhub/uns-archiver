@@ -65,14 +65,6 @@ export const projectExtrasSchema = z.object({
         .describe(
           "Maximum durable event-storage files handled in one fair replay pass (default 64). Replay keeps 25% of live ingest capacity reserved for new MQTT traffic.",
         ),
-      storedReplayIntervalMs: z
-        .number()
-        .int()
-        .min(250)
-        .optional()
-        .describe(
-          "Delay in milliseconds between completed durable replay passes (default 5000). Lower values drain backlogs faster but add QuestDB load.",
-        ),
       traceIngest: z
         .boolean()
         .optional()
@@ -82,150 +74,122 @@ export const projectExtrasSchema = z.object({
     })
     .optional()
     .describe("Archiver runtime settings."),
-  questdb: z
-    .object({
-      configurationString: z
-        .string()
-        .min(1, "questdb.configurationString must not be empty")
-        .optional()
-        .describe(
-          "Legacy QuestDB ILP connection string. Prefer url, username, and password for production secrets.",
-        ),
-      url: questDbUrlSchema
-        .optional()
-        .describe(
-          "QuestDB HTTP endpoint used with the structured credential form (for example https://questdb.example:9000).",
-        ),
-      username: nonEmptySecretValueSchema
-        .optional()
-        .describe(
-          "QuestDB username used with questdb.url. Store as a secret reference in production.",
-        ),
-      password: nonEmptySecretValueSchema
-        .optional()
-        .describe(
-          "QuestDB password used with questdb.url. Store as a secret reference in production.",
-        ),
-      batch: z
-        .object({
-          flushIntervalMs: z
-            .number()
-            .int()
-            .positive()
-            .optional()
-            .describe(
-              "Maximum time a completed ILP row waits before a shared QuestDB flush (default 1000ms).",
-            ),
-          maxRows: z
-            .number()
-            .int()
-            .positive()
-            .optional()
-            .describe(
-              "Number of ILP rows that trigger an immediate shared QuestDB flush (default 256).",
-            ),
-          maxPendingRows: z
-            .number()
-            .int()
-            .positive()
-            .optional()
-            .describe(
-              "Maximum accepted ILP rows across the queued and flushing shared sender batch (default 2048). A full queue rejects new writes so the archiver can persist them to event storage.",
-            ),
-        })
-        .optional()
-        .superRefine((value, context) => {
-          if (
-            value?.maxRows &&
-            value?.maxPendingRows &&
-            value.maxPendingRows < value.maxRows
-          ) {
-            context.addIssue({
-              code: "custom",
-              message:
-                "questdb.batch.maxPendingRows must be greater than or equal to questdb.batch.maxRows.",
-            });
-          }
-        })
-        .describe("Bounded shared QuestDB ILP batching settings."),
-      dataStorage: z
-        .array(
-          z.object({
-            tablePrefix: z
-              .string()
-              .min(1, "questdb.dataStorage[].tablePrefix is required")
-              .describe(
-                "Prefix used when naming QuestDB tables for this topic",
-              ),
-            topic: z
-              .string()
-              .min(1, "questdb.dataStorage[].topic is required")
-              .describe("UNS topic filter subscribed for ingestion"),
-            ingestMode: z
-              .enum(["append", "dedup", "window_replace"])
-              .optional()
-              .describe(
-                "Default ingestion mode: append (default), dedup (upsert on eventId), or window_replace. Note: QuestDB has no row-level DELETE; window_replace is implemented as soft delete (sets deleted=true for rows in the window that were not refreshed).",
-              ),
-            ingestModeData: z
-              .enum(["append", "dedup", "window_replace"])
-              .optional()
-              .describe("Optional override of ingestMode for data messages"),
-            ingestModeTable: z
-              .enum(["append", "dedup", "window_replace"])
-              .optional()
-              .describe("Optional override of ingestMode for table messages"),
-            dataGroups: z
-              .array(
-                z.object({
-                  name: z
-                    .string()
-                    .min(
-                      1,
-                      "questdb.dataStorage[].dataGroups[].name is required",
-                    ),
-                  ingestMode: z
-                    .enum(["append", "dedup", "window_replace"])
-                    .describe("Ingestion mode override for this dataGroup"),
-                  ingestModeData: z
-                    .enum(["append", "dedup", "window_replace"])
-                    .optional()
-                    .describe(
-                      "Optional override for data messages in this dataGroup",
-                    ),
-                  ingestModeTable: z
-                    .enum(["append", "dedup", "window_replace"])
-                    .optional()
-                    .describe(
-                      "Optional override for table messages in this dataGroup",
-                    ),
-                }),
-              )
-              .optional()
-              .describe("Per-dataGroup ingestion mode overrides"),
-          }),
-        )
-        .min(1, "At least one QuestDB data storage target is required"),
-    })
-    .superRefine((value, context) => {
-      if (value.configurationString) {
-        if (value.url || value.username || value.password) {
+  questdb: z.object({
+    configurationString: z
+      .string()
+      .min(1, "questdb.configurationString must not be empty")
+      .optional()
+      .describe("Legacy QuestDB ILP connection string. Prefer url, username, and password for production secrets."),
+    url: questDbUrlSchema
+      .optional()
+      .describe("QuestDB HTTP endpoint used with the structured credential form (for example https://questdb.example:9000)."),
+    username: nonEmptySecretValueSchema
+      .optional()
+      .describe("QuestDB username used with questdb.url. Store as a secret reference in production."),
+    password: nonEmptySecretValueSchema
+      .optional()
+      .describe("QuestDB password used with questdb.url. Store as a secret reference in production."),
+    batch: z
+      .object({
+        flushIntervalMs: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe(
+            "Maximum time a completed ILP row waits before a shared QuestDB flush (default 1000ms).",
+          ),
+        maxRows: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe(
+            "Number of ILP rows that trigger an immediate shared QuestDB flush (default 256).",
+          ),
+        maxPendingRows: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe(
+            "Maximum accepted ILP rows across the queued and flushing shared sender batch (default 2048). A full queue rejects new writes so the archiver can persist them to event storage.",
+          ),
+      })
+      .optional()
+      .superRefine((value, context) => {
+        if (value?.maxRows && value?.maxPendingRows && value.maxPendingRows < value.maxRows) {
           context.addIssue({
             code: "custom",
-            message:
-              "Use either questdb.configurationString or questdb.url with username and password, not both.",
+            message: "questdb.batch.maxPendingRows must be greater than or equal to questdb.batch.maxRows.",
           });
         }
-        return;
-      }
-      if (!value.url || !value.username || !value.password) {
+      })
+      .describe("Bounded shared QuestDB ILP batching settings."),
+    dataStorage: z
+      .array(
+        z.object({
+          tablePrefix: z
+            .string()
+            .min(1, "questdb.dataStorage[].tablePrefix is required")
+            .describe("Prefix used when naming QuestDB tables for this topic"),
+          topic: z
+            .string()
+            .min(1, "questdb.dataStorage[].topic is required")
+            .describe("UNS topic filter subscribed for ingestion"),
+          ingestMode: z
+            .enum(["append", "dedup", "window_replace"])
+            .optional()
+            .describe(
+              "Default ingestion mode: append (default), dedup (upsert on eventId), or window_replace. Note: QuestDB has no row-level DELETE; window_replace is implemented as soft delete (sets deleted=true for rows in the window that were not refreshed).",
+            ),
+          ingestModeData: z
+            .enum(["append", "dedup", "window_replace"])
+            .optional()
+            .describe("Optional override of ingestMode for data messages"),
+          ingestModeTable: z
+            .enum(["append", "dedup", "window_replace"])
+            .optional()
+            .describe("Optional override of ingestMode for table messages"),
+          dataGroups: z
+            .array(
+              z.object({
+                name: z.string().min(1, "questdb.dataStorage[].dataGroups[].name is required"),
+                ingestMode: z
+                  .enum(["append", "dedup", "window_replace"])
+                  .describe("Ingestion mode override for this dataGroup"),
+                ingestModeData: z
+                  .enum(["append", "dedup", "window_replace"])
+                  .optional()
+                  .describe("Optional override for data messages in this dataGroup"),
+                ingestModeTable: z
+                  .enum(["append", "dedup", "window_replace"])
+                  .optional()
+                  .describe("Optional override for table messages in this dataGroup"),
+              }),
+            )
+            .optional()
+            .describe("Per-dataGroup ingestion mode overrides"),
+        }),
+      )
+      .min(1, "At least one QuestDB data storage target is required"),
+  }).superRefine((value, context) => {
+    if (value.configurationString) {
+      if (value.url || value.username || value.password) {
         context.addIssue({
           code: "custom",
-          message:
-            "QuestDB requires configurationString or url, username, and password.",
+          message: "Use either questdb.configurationString or questdb.url with username and password, not both.",
         });
       }
-    }),
+      return;
+    }
+    if (!value.url || !value.username || !value.password) {
+      context.addIssue({
+        code: "custom",
+        message: "QuestDB requires configurationString or url, username, and password.",
+      });
+    }
+  }),
 });
 
 export type ProjectExtras = z.infer<typeof projectExtrasSchema>;

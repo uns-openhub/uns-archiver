@@ -45,7 +45,10 @@
                           "type": "string"
                         }
                       },
-                      "required": ["provider", "key"],
+                      "required": [
+                        "provider",
+                        "key"
+                      ],
                       "additionalProperties": false,
                       "description": "Secret placeholder resolved from process.env."
                     },
@@ -84,7 +87,11 @@
                           "type": "string"
                         }
                       },
-                      "required": ["provider", "path", "key"],
+                      "required": [
+                        "provider",
+                        "path",
+                        "key"
+                      ],
                       "additionalProperties": false,
                       "description": "Secret placeholder resolved from Infisical."
                     }
@@ -127,7 +134,10 @@
                           "type": "string"
                         }
                       },
-                      "required": ["provider", "key"],
+                      "required": [
+                        "provider",
+                        "key"
+                      ],
                       "additionalProperties": false,
                       "description": "Secret placeholder resolved from process.env."
                     },
@@ -166,7 +176,11 @@
                           "type": "string"
                         }
                       },
-                      "required": ["provider", "path", "key"],
+                      "required": [
+                        "provider",
+                        "path",
+                        "key"
+                      ],
                       "additionalProperties": false,
                       "description": "Secret placeholder resolved from Infisical."
                     }
@@ -177,7 +191,11 @@
             "instanceMode": {
               "default": "wait",
               "type": "string",
-              "enum": ["wait", "force", "handover"]
+              "enum": [
+                "wait",
+                "force",
+                "handover"
+              ]
             },
             "processName": {
               "type": "string",
@@ -243,10 +261,19 @@
             "env": {
               "default": "dev",
               "type": "string",
-              "enum": ["dev", "staging", "test", "prod"]
+              "enum": [
+                "dev",
+                "staging",
+                "test",
+                "prod"
+              ]
             }
           },
-          "required": ["graphql", "rest", "processName"],
+          "required": [
+            "graphql",
+            "rest",
+            "processName"
+          ],
           "additionalProperties": false
         },
         "logging": {
@@ -280,7 +307,10 @@
                           "description": "Host or IP address that should be used directly."
                         }
                       },
-                      "required": ["provider", "value"],
+                      "required": [
+                        "provider",
+                        "value"
+                      ],
                       "additionalProperties": false,
                       "description": "Host placeholder resolved from an in-line value."
                     },
@@ -306,7 +336,10 @@
                           "type": "string"
                         }
                       },
-                      "required": ["provider", "key"],
+                      "required": [
+                        "provider",
+                        "key"
+                      ],
                       "additionalProperties": false,
                       "description": "Host placeholder resolved via HostResolverOptions.externalHosts or resolveExternal function."
                     },
@@ -322,7 +355,10 @@
                           "default": "IPv4",
                           "description": "Address family to return when scanning interfaces.",
                           "type": "string",
-                          "enum": ["IPv4", "IPv6"]
+                          "enum": [
+                            "IPv4",
+                            "IPv6"
+                          ]
                         },
                         "interfaceName": {
                           "description": "Specific interface to read (falls back to the first match when omitted).",
@@ -337,7 +373,9 @@
                           "type": "string"
                         }
                       },
-                      "required": ["provider"],
+                      "required": [
+                        "provider"
+                      ],
                       "additionalProperties": false,
                       "description": "Host placeholder resolved from os.networkInterfaces()."
                     }
@@ -364,7 +402,9 @@
               ]
             }
           },
-          "required": ["host"],
+          "required": [
+            "host"
+          ],
           "additionalProperties": false
         },
         "input": {
@@ -393,7 +433,10 @@
                           "description": "Host or IP address that should be used directly."
                         }
                       },
-                      "required": ["provider", "value"],
+                      "required": [
+                        "provider",
+                        "value"
+                      ],
                       "additionalProperties": false,
                       "description": "Host placeholder resolved from an in-line value."
                     },
@@ -419,7 +462,10 @@
                           "type": "string"
                         }
                       },
-                      "required": ["provider", "key"],
+                      "required": [
+                        "provider",
+                        "key"
+                      ],
                       "additionalProperties": false,
                       "description": "Host placeholder resolved via HostResolverOptions.externalHosts or resolveExternal function."
                     },
@@ -435,7 +481,10 @@
                           "default": "IPv4",
                           "description": "Address family to return when scanning interfaces.",
                           "type": "string",
-                          "enum": ["IPv4", "IPv6"]
+                          "enum": [
+                            "IPv4",
+                            "IPv6"
+                          ]
                         },
                         "interfaceName": {
                           "description": "Specific interface to read (falls back to the first match when omitted).",
@@ -450,7 +499,9 @@
                           "type": "string"
                         }
                       },
-                      "required": ["provider"],
+                      "required": [
+                        "provider"
+                      ],
                       "additionalProperties": false,
                       "description": "Host placeholder resolved from os.networkInterfaces()."
                     }
@@ -483,7 +534,10 @@
                             "description": "Host or IP address that should be used directly."
                           }
                         },
-                        "required": ["provider", "value"],
+                        "required": [
+                          "provider",
+                          "value"
+                        ],
                         "additionalProperties": false,
                         "description": "Host placeholder resolved from an in-line value."
                       },
@@ -509,7 +563,10 @@
                             "type": "string"
                           }
                         },
-                        "required": ["provider", "key"],
+                        "required": [
+                          "provider",
+                          "key"
+                        ],
                         "additionalProperties": false,
                         "description": "Host placeholder resolved via HostResolverOptions.externalHosts or resolveExternal function."
                       },
@@ -525,7 +582,10 @@
                             "default": "IPv4",
                             "description": "Address family to return when scanning interfaces.",
                             "type": "string",
-                            "enum": ["IPv4", "IPv6"]
+                            "enum": [
+                              "IPv4",
+                              "IPv6"
+                            ]
                           },
                           "interfaceName": {
                             "description": "Specific interface to read (falls back to the first match when omitted).",
@@ -540,7 +600,9 @@
                             "type": "string"
                           }
                         },
-                        "required": ["provider"],
+                        "required": [
+                          "provider"
+                        ],
                         "additionalProperties": false,
                         "description": "Host placeholder resolved from os.networkInterfaces()."
                       }
@@ -577,7 +639,10 @@
                                 "description": "Host or IP address that should be used directly."
                               }
                             },
-                            "required": ["provider", "value"],
+                            "required": [
+                              "provider",
+                              "value"
+                            ],
                             "additionalProperties": false,
                             "description": "Host placeholder resolved from an in-line value."
                           },
@@ -603,7 +668,10 @@
                                 "type": "string"
                               }
                             },
-                            "required": ["provider", "key"],
+                            "required": [
+                              "provider",
+                              "key"
+                            ],
                             "additionalProperties": false,
                             "description": "Host placeholder resolved via HostResolverOptions.externalHosts or resolveExternal function."
                           },
@@ -619,7 +687,10 @@
                                 "default": "IPv4",
                                 "description": "Address family to return when scanning interfaces.",
                                 "type": "string",
-                                "enum": ["IPv4", "IPv6"]
+                                "enum": [
+                                  "IPv4",
+                                  "IPv6"
+                                ]
                               },
                               "interfaceName": {
                                 "description": "Specific interface to read (falls back to the first match when omitted).",
@@ -634,7 +705,9 @@
                                 "type": "string"
                               }
                             },
-                            "required": ["provider"],
+                            "required": [
+                              "provider"
+                            ],
                             "additionalProperties": false,
                             "description": "Host placeholder resolved from os.networkInterfaces()."
                           }
@@ -648,10 +721,19 @@
                   },
                   "protocol": {
                     "type": "string",
-                    "enum": ["mqtt", "mqtts", "ws", "wss", "tcp", "ssl"]
+                    "enum": [
+                      "mqtt",
+                      "mqtts",
+                      "ws",
+                      "wss",
+                      "tcp",
+                      "ssl"
+                    ]
                   }
                 },
-                "required": ["host"],
+                "required": [
+                  "host"
+                ],
                 "additionalProperties": false
               }
             },
@@ -661,7 +743,14 @@
             },
             "protocol": {
               "type": "string",
-              "enum": ["mqtt", "mqtts", "ws", "wss", "tcp", "ssl"]
+              "enum": [
+                "mqtt",
+                "mqtts",
+                "ws",
+                "wss",
+                "tcp",
+                "ssl"
+              ]
             },
             "username": {
               "type": "string"
@@ -695,7 +784,10 @@
                           "type": "string"
                         }
                       },
-                      "required": ["provider", "key"],
+                      "required": [
+                        "provider",
+                        "key"
+                      ],
                       "additionalProperties": false,
                       "description": "Secret placeholder resolved from process.env."
                     },
@@ -734,7 +826,11 @@
                           "type": "string"
                         }
                       },
-                      "required": ["provider", "path", "key"],
+                      "required": [
+                        "provider",
+                        "path",
+                        "key"
+                      ],
                       "additionalProperties": false,
                       "description": "Secret placeholder resolved from Infisical."
                     }
@@ -850,7 +946,10 @@
                           "description": "Host or IP address that should be used directly."
                         }
                       },
-                      "required": ["provider", "value"],
+                      "required": [
+                        "provider",
+                        "value"
+                      ],
                       "additionalProperties": false,
                       "description": "Host placeholder resolved from an in-line value."
                     },
@@ -876,7 +975,10 @@
                           "type": "string"
                         }
                       },
-                      "required": ["provider", "key"],
+                      "required": [
+                        "provider",
+                        "key"
+                      ],
                       "additionalProperties": false,
                       "description": "Host placeholder resolved via HostResolverOptions.externalHosts or resolveExternal function."
                     },
@@ -892,7 +994,10 @@
                           "default": "IPv4",
                           "description": "Address family to return when scanning interfaces.",
                           "type": "string",
-                          "enum": ["IPv4", "IPv6"]
+                          "enum": [
+                            "IPv4",
+                            "IPv6"
+                          ]
                         },
                         "interfaceName": {
                           "description": "Specific interface to read (falls back to the first match when omitted).",
@@ -907,7 +1012,9 @@
                           "type": "string"
                         }
                       },
-                      "required": ["provider"],
+                      "required": [
+                        "provider"
+                      ],
                       "additionalProperties": false,
                       "description": "Host placeholder resolved from os.networkInterfaces()."
                     }
@@ -940,7 +1047,10 @@
                             "description": "Host or IP address that should be used directly."
                           }
                         },
-                        "required": ["provider", "value"],
+                        "required": [
+                          "provider",
+                          "value"
+                        ],
                         "additionalProperties": false,
                         "description": "Host placeholder resolved from an in-line value."
                       },
@@ -966,7 +1076,10 @@
                             "type": "string"
                           }
                         },
-                        "required": ["provider", "key"],
+                        "required": [
+                          "provider",
+                          "key"
+                        ],
                         "additionalProperties": false,
                         "description": "Host placeholder resolved via HostResolverOptions.externalHosts or resolveExternal function."
                       },
@@ -982,7 +1095,10 @@
                             "default": "IPv4",
                             "description": "Address family to return when scanning interfaces.",
                             "type": "string",
-                            "enum": ["IPv4", "IPv6"]
+                            "enum": [
+                              "IPv4",
+                              "IPv6"
+                            ]
                           },
                           "interfaceName": {
                             "description": "Specific interface to read (falls back to the first match when omitted).",
@@ -997,7 +1113,9 @@
                             "type": "string"
                           }
                         },
-                        "required": ["provider"],
+                        "required": [
+                          "provider"
+                        ],
                         "additionalProperties": false,
                         "description": "Host placeholder resolved from os.networkInterfaces()."
                       }
@@ -1034,7 +1152,10 @@
                                 "description": "Host or IP address that should be used directly."
                               }
                             },
-                            "required": ["provider", "value"],
+                            "required": [
+                              "provider",
+                              "value"
+                            ],
                             "additionalProperties": false,
                             "description": "Host placeholder resolved from an in-line value."
                           },
@@ -1060,7 +1181,10 @@
                                 "type": "string"
                               }
                             },
-                            "required": ["provider", "key"],
+                            "required": [
+                              "provider",
+                              "key"
+                            ],
                             "additionalProperties": false,
                             "description": "Host placeholder resolved via HostResolverOptions.externalHosts or resolveExternal function."
                           },
@@ -1076,7 +1200,10 @@
                                 "default": "IPv4",
                                 "description": "Address family to return when scanning interfaces.",
                                 "type": "string",
-                                "enum": ["IPv4", "IPv6"]
+                                "enum": [
+                                  "IPv4",
+                                  "IPv6"
+                                ]
                               },
                               "interfaceName": {
                                 "description": "Specific interface to read (falls back to the first match when omitted).",
@@ -1091,7 +1218,9 @@
                                 "type": "string"
                               }
                             },
-                            "required": ["provider"],
+                            "required": [
+                              "provider"
+                            ],
                             "additionalProperties": false,
                             "description": "Host placeholder resolved from os.networkInterfaces()."
                           }
@@ -1105,10 +1234,19 @@
                   },
                   "protocol": {
                     "type": "string",
-                    "enum": ["mqtt", "mqtts", "ws", "wss", "tcp", "ssl"]
+                    "enum": [
+                      "mqtt",
+                      "mqtts",
+                      "ws",
+                      "wss",
+                      "tcp",
+                      "ssl"
+                    ]
                   }
                 },
-                "required": ["host"],
+                "required": [
+                  "host"
+                ],
                 "additionalProperties": false
               }
             },
@@ -1118,7 +1256,14 @@
             },
             "protocol": {
               "type": "string",
-              "enum": ["mqtt", "mqtts", "ws", "wss", "tcp", "ssl"]
+              "enum": [
+                "mqtt",
+                "mqtts",
+                "ws",
+                "wss",
+                "tcp",
+                "ssl"
+              ]
             },
             "username": {
               "type": "string"
@@ -1152,7 +1297,10 @@
                           "type": "string"
                         }
                       },
-                      "required": ["provider", "key"],
+                      "required": [
+                        "provider",
+                        "key"
+                      ],
                       "additionalProperties": false,
                       "description": "Secret placeholder resolved from process.env."
                     },
@@ -1191,7 +1339,11 @@
                           "type": "string"
                         }
                       },
-                      "required": ["provider", "path", "key"],
+                      "required": [
+                        "provider",
+                        "path",
+                        "key"
+                      ],
                       "additionalProperties": false,
                       "description": "Secret placeholder resolved from Infisical."
                     }
@@ -1307,7 +1459,10 @@
                           "description": "Host or IP address that should be used directly."
                         }
                       },
-                      "required": ["provider", "value"],
+                      "required": [
+                        "provider",
+                        "value"
+                      ],
                       "additionalProperties": false,
                       "description": "Host placeholder resolved from an in-line value."
                     },
@@ -1333,7 +1488,10 @@
                           "type": "string"
                         }
                       },
-                      "required": ["provider", "key"],
+                      "required": [
+                        "provider",
+                        "key"
+                      ],
                       "additionalProperties": false,
                       "description": "Host placeholder resolved via HostResolverOptions.externalHosts or resolveExternal function."
                     },
@@ -1349,7 +1507,10 @@
                           "default": "IPv4",
                           "description": "Address family to return when scanning interfaces.",
                           "type": "string",
-                          "enum": ["IPv4", "IPv6"]
+                          "enum": [
+                            "IPv4",
+                            "IPv6"
+                          ]
                         },
                         "interfaceName": {
                           "description": "Specific interface to read (falls back to the first match when omitted).",
@@ -1364,7 +1525,9 @@
                           "type": "string"
                         }
                       },
-                      "required": ["provider"],
+                      "required": [
+                        "provider"
+                      ],
                       "additionalProperties": false,
                       "description": "Host placeholder resolved from os.networkInterfaces()."
                     }
@@ -1397,7 +1560,10 @@
                             "description": "Host or IP address that should be used directly."
                           }
                         },
-                        "required": ["provider", "value"],
+                        "required": [
+                          "provider",
+                          "value"
+                        ],
                         "additionalProperties": false,
                         "description": "Host placeholder resolved from an in-line value."
                       },
@@ -1423,7 +1589,10 @@
                             "type": "string"
                           }
                         },
-                        "required": ["provider", "key"],
+                        "required": [
+                          "provider",
+                          "key"
+                        ],
                         "additionalProperties": false,
                         "description": "Host placeholder resolved via HostResolverOptions.externalHosts or resolveExternal function."
                       },
@@ -1439,7 +1608,10 @@
                             "default": "IPv4",
                             "description": "Address family to return when scanning interfaces.",
                             "type": "string",
-                            "enum": ["IPv4", "IPv6"]
+                            "enum": [
+                              "IPv4",
+                              "IPv6"
+                            ]
                           },
                           "interfaceName": {
                             "description": "Specific interface to read (falls back to the first match when omitted).",
@@ -1454,7 +1626,9 @@
                             "type": "string"
                           }
                         },
-                        "required": ["provider"],
+                        "required": [
+                          "provider"
+                        ],
                         "additionalProperties": false,
                         "description": "Host placeholder resolved from os.networkInterfaces()."
                       }
@@ -1491,7 +1665,10 @@
                                 "description": "Host or IP address that should be used directly."
                               }
                             },
-                            "required": ["provider", "value"],
+                            "required": [
+                              "provider",
+                              "value"
+                            ],
                             "additionalProperties": false,
                             "description": "Host placeholder resolved from an in-line value."
                           },
@@ -1517,7 +1694,10 @@
                                 "type": "string"
                               }
                             },
-                            "required": ["provider", "key"],
+                            "required": [
+                              "provider",
+                              "key"
+                            ],
                             "additionalProperties": false,
                             "description": "Host placeholder resolved via HostResolverOptions.externalHosts or resolveExternal function."
                           },
@@ -1533,7 +1713,10 @@
                                 "default": "IPv4",
                                 "description": "Address family to return when scanning interfaces.",
                                 "type": "string",
-                                "enum": ["IPv4", "IPv6"]
+                                "enum": [
+                                  "IPv4",
+                                  "IPv6"
+                                ]
                               },
                               "interfaceName": {
                                 "description": "Specific interface to read (falls back to the first match when omitted).",
@@ -1548,7 +1731,9 @@
                                 "type": "string"
                               }
                             },
-                            "required": ["provider"],
+                            "required": [
+                              "provider"
+                            ],
                             "additionalProperties": false,
                             "description": "Host placeholder resolved from os.networkInterfaces()."
                           }
@@ -1562,10 +1747,19 @@
                   },
                   "protocol": {
                     "type": "string",
-                    "enum": ["mqtt", "mqtts", "ws", "wss", "tcp", "ssl"]
+                    "enum": [
+                      "mqtt",
+                      "mqtts",
+                      "ws",
+                      "wss",
+                      "tcp",
+                      "ssl"
+                    ]
                   }
                 },
-                "required": ["host"],
+                "required": [
+                  "host"
+                ],
                 "additionalProperties": false
               }
             },
@@ -1575,7 +1769,14 @@
             },
             "protocol": {
               "type": "string",
-              "enum": ["mqtt", "mqtts", "ws", "wss", "tcp", "ssl"]
+              "enum": [
+                "mqtt",
+                "mqtts",
+                "ws",
+                "wss",
+                "tcp",
+                "ssl"
+              ]
             },
             "username": {
               "type": "string"
@@ -1609,7 +1810,10 @@
                           "type": "string"
                         }
                       },
-                      "required": ["provider", "key"],
+                      "required": [
+                        "provider",
+                        "key"
+                      ],
                       "additionalProperties": false,
                       "description": "Secret placeholder resolved from process.env."
                     },
@@ -1648,7 +1852,11 @@
                           "type": "string"
                         }
                       },
-                      "required": ["provider", "path", "key"],
+                      "required": [
+                        "provider",
+                        "path",
+                        "key"
+                      ],
                       "additionalProperties": false,
                       "description": "Secret placeholder resolved from Infisical."
                     }
@@ -1744,7 +1952,9 @@
             "provider": {
               "default": "azure-devops",
               "type": "string",
-              "enum": ["azure-devops"]
+              "enum": [
+                "azure-devops"
+              ]
             },
             "organization": {
               "type": "string",
@@ -1755,7 +1965,9 @@
               "minLength": 1
             }
           },
-          "required": ["organization"],
+          "required": [
+            "organization"
+          ],
           "additionalProperties": false
         },
         "archiver": {
@@ -1796,12 +2008,6 @@
               "description": "Maximum durable event-storage files handled in one fair replay pass (default 64). Replay keeps 25% of live ingest capacity reserved for new MQTT traffic.",
               "type": "integer",
               "exclusiveMinimum": 0,
-              "maximum": 9007199254740991
-            },
-            "storedReplayIntervalMs": {
-              "description": "Delay in milliseconds between completed durable replay passes (default 5000). Lower values drain backlogs faster but add QuestDB load.",
-              "type": "integer",
-              "minimum": 250,
               "maximum": 9007199254740991
             },
             "traceIngest": {
@@ -1849,7 +2055,10 @@
                           "type": "string"
                         }
                       },
-                      "required": ["provider", "key"],
+                      "required": [
+                        "provider",
+                        "key"
+                      ],
                       "additionalProperties": false,
                       "description": "Secret placeholder resolved from process.env."
                     },
@@ -1888,7 +2097,11 @@
                           "type": "string"
                         }
                       },
-                      "required": ["provider", "path", "key"],
+                      "required": [
+                        "provider",
+                        "path",
+                        "key"
+                      ],
                       "additionalProperties": false,
                       "description": "Secret placeholder resolved from Infisical."
                     }
@@ -1926,7 +2139,10 @@
                           "type": "string"
                         }
                       },
-                      "required": ["provider", "key"],
+                      "required": [
+                        "provider",
+                        "key"
+                      ],
                       "additionalProperties": false,
                       "description": "Secret placeholder resolved from process.env."
                     },
@@ -1965,7 +2181,11 @@
                           "type": "string"
                         }
                       },
-                      "required": ["provider", "path", "key"],
+                      "required": [
+                        "provider",
+                        "path",
+                        "key"
+                      ],
                       "additionalProperties": false,
                       "description": "Secret placeholder resolved from Infisical."
                     }
@@ -2003,7 +2223,10 @@
                           "type": "string"
                         }
                       },
-                      "required": ["provider", "key"],
+                      "required": [
+                        "provider",
+                        "key"
+                      ],
                       "additionalProperties": false,
                       "description": "Secret placeholder resolved from process.env."
                     },
@@ -2042,7 +2265,11 @@
                           "type": "string"
                         }
                       },
-                      "required": ["provider", "path", "key"],
+                      "required": [
+                        "provider",
+                        "path",
+                        "key"
+                      ],
                       "additionalProperties": false,
                       "description": "Secret placeholder resolved from Infisical."
                     }
@@ -2093,17 +2320,29 @@
                   "ingestMode": {
                     "description": "Default ingestion mode: append (default), dedup (upsert on eventId), or window_replace. Note: QuestDB has no row-level DELETE; window_replace is implemented as soft delete (sets deleted=true for rows in the window that were not refreshed).",
                     "type": "string",
-                    "enum": ["append", "dedup", "window_replace"]
+                    "enum": [
+                      "append",
+                      "dedup",
+                      "window_replace"
+                    ]
                   },
                   "ingestModeData": {
                     "description": "Optional override of ingestMode for data messages",
                     "type": "string",
-                    "enum": ["append", "dedup", "window_replace"]
+                    "enum": [
+                      "append",
+                      "dedup",
+                      "window_replace"
+                    ]
                   },
                   "ingestModeTable": {
                     "description": "Optional override of ingestMode for table messages",
                     "type": "string",
-                    "enum": ["append", "dedup", "window_replace"]
+                    "enum": [
+                      "append",
+                      "dedup",
+                      "window_replace"
+                    ]
                   },
                   "dataGroups": {
                     "description": "Per-dataGroup ingestion mode overrides",
@@ -2117,32 +2356,56 @@
                         },
                         "ingestMode": {
                           "type": "string",
-                          "enum": ["append", "dedup", "window_replace"],
+                          "enum": [
+                            "append",
+                            "dedup",
+                            "window_replace"
+                          ],
                           "description": "Ingestion mode override for this dataGroup"
                         },
                         "ingestModeData": {
                           "description": "Optional override for data messages in this dataGroup",
                           "type": "string",
-                          "enum": ["append", "dedup", "window_replace"]
+                          "enum": [
+                            "append",
+                            "dedup",
+                            "window_replace"
+                          ]
                         },
                         "ingestModeTable": {
                           "description": "Optional override for table messages in this dataGroup",
                           "type": "string",
-                          "enum": ["append", "dedup", "window_replace"]
+                          "enum": [
+                            "append",
+                            "dedup",
+                            "window_replace"
+                          ]
                         }
                       },
-                      "required": ["name", "ingestMode"]
+                      "required": [
+                        "name",
+                        "ingestMode"
+                      ]
                     }
                   }
                 },
-                "required": ["tablePrefix", "topic"]
+                "required": [
+                  "tablePrefix",
+                  "topic"
+                ]
               }
             }
           },
-          "required": ["dataStorage"]
+          "required": [
+            "dataStorage"
+          ]
         }
       },
-      "required": ["uns", "infra", "questdb"],
+      "required": [
+        "uns",
+        "infra",
+        "questdb"
+      ],
       "additionalProperties": false
     }
   },

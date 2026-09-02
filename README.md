@@ -26,11 +26,11 @@ QuestDB table mappings back to the UNS infrastructure.
 The service ships three topology-specific profiles. They contain no deployment
 credentials or customer endpoints.
 
-| Profile                          | Use it when                                                  | MQTT and QuestDB                            | Service credential                          |
-| -------------------------------- | ------------------------------------------------------------ | ------------------------------------------- | ------------------------------------------- |
-| `config-development-host.json`   | Running the service directly with `pnpm run dev` on the host | `localhost`                                 | `UNS_SERVICE_TOKEN` from untracked `.env`   |
-| `config-development-podman.json` | Deploying through a local Podman OpenHub controller          | Compose DNS: `mosquitto`, `questdb`         | Controller-managed `UNS_SERVICE_TOKEN_FILE` |
-| `config-production.json`         | Creating a production controller instance                    | Compose/Runtime DNS: `mosquitto`, `questdb` | Controller-managed `/run` token file        |
+| Profile | Use it when | MQTT and QuestDB | Service credential |
+| --- | --- | --- | --- |
+| `config-development-host.json` | Running the service directly with `pnpm run dev` on the host | `localhost` | `UNS_SERVICE_TOKEN` from untracked `.env` |
+| `config-development-podman.json` | Deploying through a local Podman OpenHub controller | Compose DNS: `mosquitto`, `questdb` | Controller-managed `UNS_SERVICE_TOKEN_FILE` |
+| `config-production.json` | Creating a production controller instance | Compose/Runtime DNS: `mosquitto`, `questdb` | Controller-managed `/run` token file |
 
 The Podman and production profiles intentionally share their internal network
 names: in both cases the RTT process runs alongside the controller. The
@@ -74,9 +74,8 @@ the live queue for MQTT traffic; they are not kept in an unbounded in-memory
 promise backlog. `archiver.ingestConcurrency` defaults to `1`; only raise it
 after measuring QuestDB and process memory under load.
 
-`archiver.storedReplayBatchSize` defaults to `64`, and
-`archiver.storedReplayIntervalMs` defaults to five seconds. A pass processes
-up to that many files concurrently so their
+`archiver.storedReplayBatchSize` defaults to `64`. The replay interval remains
+one minute, but a pass processes up to that many files concurrently so their
 writes share the existing QuestDB ILP batcher. With single-row events and no
 live traffic joining the same sender, this is roughly one flush per 64 replayed
 events instead of one flush per event; table shape, live traffic, and
@@ -87,12 +86,6 @@ stale `.processing` files from a stopped process are returned to the durable
 `.event` queue before replay begins. The authenticated `topics` control status
 exposes aggregate stored-replay counters and last-run diagnostics without
 exposing event content.
-
-Directory scans use streaming iteration and retain only the current replay
-batch in memory. This keeps startup, status counting, and replay bounded even
-when an outage has left millions of event files in the durable spool. Lowering
-the replay interval drains such a backlog faster; raise the rate gradually and
-watch QuestDB dependency health and live ingest headroom.
 
 ## Configuration
 

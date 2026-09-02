@@ -12,40 +12,22 @@ import {
 import UnsMqttProxy from "@uns-kit/core/uns-mqtt/uns-mqtt-proxy.js";
 import { Sender } from "@questdb/nodejs-client";
 import { createHash } from "crypto";
-import {
-  existsSync,
-  mkdirSync,
-  promises as fs,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
-} from "fs";
+import { existsSync, mkdirSync, promises as fs, renameSync, unlinkSync, writeFileSync } from "fs";
 import * as path from "path";
-import {
-  buildServiceApiInteractions,
-  type UnsProxyProcessWithApi,
-} from "@uns-kit/api";
+import { buildServiceApiInteractions, type UnsProxyProcessWithApi } from "@uns-kit/api";
 
 import { ActiveUnsTopics, UnsTopicMetadata } from "./active-uns-topics.js";
 import { TopicMatcher } from "./topic-matcher.js";
 import { UnsPacket } from "@uns-kit/core/uns/uns-packet.js";
 
-import {
-  QuestDBWriter,
-  type QuestDbDependencyHealth,
-} from "./writers/questDbWriter.js";
+import { QuestDBWriter, type QuestDbDependencyHealth } from "./writers/questDbWriter.js";
 import { NonRetryableError } from "./errors.js";
 import { buildQuestDbTableName } from "./questdb-table-name.js";
 import {
   resolveQuestDbConfigurationString,
   resolveQuestDbPublicConfigurationString,
 } from "./config/questdb-connection.js";
-import {
-  CircuitBreaker,
-  errorMessage,
-  isRetryableNetworkError,
-  withRetry,
-} from "./resilience.js";
+import { CircuitBreaker, errorMessage, isRetryableNetworkError, withRetry } from "./resilience.js";
 import { canonicalizeTopics, subscriptionDelta } from "./subscription-state.js";
 import { BoundedIngestQueue } from "./bounded-ingest-queue.js";
 import { drainArchiverForShutdown } from "./archiver-shutdown.js";
@@ -57,33 +39,29 @@ import {
 } from "./stored-replay-limits.js";
 let pkgInfo: { name: string; version: string } | null = null;
 
+
 const EVENT_STORAGE_DIR = "./event_storage";
 const EVENT_FILE_EXTENSION = ".event";
 const EVENT_PROCESSING_EXTENSION = ".processing";
 const FAILED_EVENT_STORAGE_DIR = path.join(EVENT_STORAGE_DIR, "failed");
 const TOPICS_REFRESH_INTERVAL = 30000; // 30 seconds
 const CONFIG_REFRESH_INTERVAL = 45000; // 30 seconds
+const STORED_EVENTS_PROCESS_INTERVAL = 60000; // 1 minute
 const MAPPING_PUBLISH_INTERVAL = 60000; // 1 minute
 const PROCESSED_EVENTS_CACHE_SIZE = 10000; // Adjust as needed
 const API_HEALTHCHECK_INTERVAL = 60000; // 1 minute
 const QUESTDB_HEALTHCHECK_INTERVAL = 30000; // 30 seconds
 
 function sanitizeTopicName(topic: string): string {
-  return typeof topic === "string" && topic.endsWith("/")
-    ? topic.slice(0, -1)
-    : topic;
+  return typeof topic === "string" && topic.endsWith("/") ? topic.slice(0, -1) : topic;
 }
 
-function filterSubsumes(
-  broaderFilter: string,
-  narrowerFilter: string,
-): boolean {
+function filterSubsumes(broaderFilter: string, narrowerFilter: string): boolean {
   const broader = broaderFilter.split("/");
   const narrower = narrowerFilter.split("/");
 
   const canMatchEmptySuffix = (segments: string[], index: number): boolean =>
-    index >= segments.length ||
-    (segments[index] === "#" && index === segments.length - 1);
+    index >= segments.length || (segments[index] === "#" && index === segments.length - 1);
 
   const visit = (index: number): boolean => {
     if (index >= broader.length && index >= narrower.length) return true;
@@ -129,8 +107,7 @@ function minimizeSubscriptionFilters(filters: string[]): string[] {
   return uniqueFilters.filter(
     (candidate, index) =>
       !uniqueFilters.some(
-        (other, otherIndex) =>
-          otherIndex !== index && filterSubsumes(other, candidate),
+        (other, otherIndex) => otherIndex !== index && filterSubsumes(other, candidate),
       ),
   );
 }
@@ -148,22 +125,14 @@ function resolveIngestMode(storage: any, unsPacket: any): IngestMode {
   const isData = !!unsPacket?.message?.data;
   const isTable = !!unsPacket?.message?.table;
   const dataGroup: string | undefined =
-    (isData && unsPacket?.message?.data?.dataGroup) ||
-    (isTable && unsPacket?.message?.table?.dataGroup) ||
-    undefined;
-  const groupOverride: DataGroupOverride | undefined = Array.isArray(
-    storage?.dataGroups,
-  )
+    (isData && unsPacket?.message?.data?.dataGroup) || (isTable && unsPacket?.message?.table?.dataGroup) || undefined;
+  const groupOverride: DataGroupOverride | undefined = Array.isArray(storage?.dataGroups)
     ? storage.dataGroups.find((g: any) => g?.name === dataGroup)
     : undefined;
 
   const modeFromGroup = groupOverride?.ingestMode;
-  const modeData = isData
-    ? (groupOverride?.ingestModeData ?? storage?.ingestModeData)
-    : undefined;
-  const modeTable = isTable
-    ? (groupOverride?.ingestModeTable ?? storage?.ingestModeTable)
-    : undefined;
+  const modeData = isData ? (groupOverride?.ingestModeData ?? storage?.ingestModeData) : undefined;
+  const modeTable = isTable ? (groupOverride?.ingestModeTable ?? storage?.ingestModeTable) : undefined;
 
   return modeData ?? modeTable ?? modeFromGroup ?? base;
 }
@@ -197,13 +166,11 @@ type ArchiverRuntimeConfig = {
   ingestQueueMaxBytes?: number;
   ingestConcurrency?: number;
   storedReplayBatchSize?: number;
-  storedReplayIntervalMs?: number;
   traceIngest?: boolean;
 };
 
 const resolveTraceIngestFromEnv = (): boolean =>
-  process.env.UNS_ARCHIVER_TRACE === "1" ||
-  process.env.UNS_ARCHIVER_TRACE_INGEST === "1";
+  process.env.UNS_ARCHIVER_TRACE === "1" || process.env.UNS_ARCHIVER_TRACE_INGEST === "1";
 
 let traceIngestEnabled = resolveTraceIngestFromEnv();
 let inactiveBufferMaxEvents = 2000;
@@ -212,13 +179,10 @@ let ingestQueueMaxEvents = 256;
 let ingestQueueMaxBytes = 16 * 1024 * 1024;
 let ingestConcurrency = 1;
 let storedReplayBatchSize = 64;
-let storedReplayIntervalMs = 5_000;
 let ingestQueue: BoundedIngestQueue<{ topic: any; message: any }> | undefined;
 
 const resolvePositiveInteger = (value: unknown, fallback: number): number =>
-  typeof value === "number" && Number.isInteger(value) && value > 0
-    ? value
-    : fallback;
+  typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
 
 const refreshArchiverRuntimeSettings = () => {
   const cfg: ArchiverRuntimeConfig | undefined = (config as any)?.archiver;
@@ -230,36 +194,22 @@ const refreshArchiverRuntimeSettings = () => {
   inactiveBufferMaxAgeMs =
     typeof cfg?.inactiveBufferMaxAgeMs === "number"
       ? cfg.inactiveBufferMaxAgeMs
-      : Number(
-          process.env.UNS_ARCHIVER_INACTIVE_BUFFER_MAX_AGE_MS ?? 5 * 60 * 1000,
-        );
+      : Number(process.env.UNS_ARCHIVER_INACTIVE_BUFFER_MAX_AGE_MS ?? 5 * 60 * 1000);
   ingestQueueMaxEvents = resolvePositiveInteger(
-    cfg?.ingestQueueMaxEvents ??
-      Number(process.env.UNS_ARCHIVER_INGEST_QUEUE_MAX_EVENTS),
+    cfg?.ingestQueueMaxEvents ?? Number(process.env.UNS_ARCHIVER_INGEST_QUEUE_MAX_EVENTS),
     256,
   );
   ingestQueueMaxBytes = resolvePositiveInteger(
-    cfg?.ingestQueueMaxBytes ??
-      Number(process.env.UNS_ARCHIVER_INGEST_QUEUE_MAX_BYTES),
+    cfg?.ingestQueueMaxBytes ?? Number(process.env.UNS_ARCHIVER_INGEST_QUEUE_MAX_BYTES),
     16 * 1024 * 1024,
   );
   ingestConcurrency = resolvePositiveInteger(
-    cfg?.ingestConcurrency ??
-      Number(process.env.UNS_ARCHIVER_INGEST_CONCURRENCY),
+    cfg?.ingestConcurrency ?? Number(process.env.UNS_ARCHIVER_INGEST_CONCURRENCY),
     1,
   );
   storedReplayBatchSize = resolvePositiveInteger(
-    cfg?.storedReplayBatchSize ??
-      Number(process.env.UNS_ARCHIVER_STORED_REPLAY_BATCH_SIZE),
+    cfg?.storedReplayBatchSize ?? Number(process.env.UNS_ARCHIVER_STORED_REPLAY_BATCH_SIZE),
     64,
-  );
-  storedReplayIntervalMs = Math.max(
-    250,
-    resolvePositiveInteger(
-      cfg?.storedReplayIntervalMs ??
-        Number(process.env.UNS_ARCHIVER_STORED_REPLAY_INTERVAL_MS),
-      5_000,
-    ),
   );
   ingestQueue?.configure({
     maxPendingEvents: ingestQueueMaxEvents,
@@ -273,12 +223,7 @@ logger.info(
   `Archiver ingest trace is ${traceIngestEnabled ? "ENABLED" : "DISABLED"} (set UNS_ARCHIVER_TRACE=1 to enable).`,
 );
 logger.info(
-  `Archiver configured topic filters: ${
-    (config.questdb?.dataStorage ?? [])
-      .map((s: any) => s?.topic)
-      .filter(Boolean)
-      .join(", ") || "(none)"
-  }`,
+  `Archiver configured topic filters: ${(config.questdb?.dataStorage ?? []).map((s: any) => s?.topic).filter(Boolean).join(", ") || "(none)"}`,
 );
 logger.info(
   `Archiver ingest queue: maxEvents=${ingestQueueMaxEvents}, maxBytes=${ingestQueueMaxBytes}, concurrency=${ingestConcurrency}.`,
@@ -297,9 +242,7 @@ const CONTROL_OBJECT_TYPE: string = "service";
 const CONTROL_OBJECT_ID: string = config.uns?.processName ?? "uns-archiver";
 
 // Initialize QuestDB ILP sender for data ingestion
-const questDbConfigurationString = resolveQuestDbConfigurationString(
-  config.questdb,
-);
+const questDbConfigurationString = resolveQuestDbConfigurationString(config.questdb);
 const questDbOutput = await Sender.fromConfig(questDbConfigurationString);
 const questDbWriter = new QuestDBWriter(
   questDbOutput,
@@ -307,17 +250,12 @@ const questDbWriter = new QuestDBWriter(
   config.questdb?.batch,
 );
 
-const estimateMqttEventBytes = (mqttEvent: {
-  topic: any;
-  message: any;
-}): number => {
+const estimateMqttEventBytes = (mqttEvent: { topic: any; message: any }): number => {
   const topic = String(mqttEvent.topic ?? "");
   const message = mqttEvent.message;
   const messageBytes = Buffer.isBuffer(message)
     ? message.length
-    : Buffer.byteLength(
-        typeof message === "string" ? message : JSON.stringify(message ?? ""),
-      );
+    : Buffer.byteLength(typeof message === "string" ? message : JSON.stringify(message ?? ""));
   return Buffer.byteLength(topic) + messageBytes;
 };
 
@@ -388,8 +326,7 @@ async function publishArchiverServiceMetadata() {
     serviceId: "uns-archiver",
     kind: "core",
     label: "UNS Archiver",
-    description:
-      "Persists UNS time-series data into QuestDB and publishes QuestDB table mappings.",
+    description: "Persists UNS time-series data into QuestDB and publishes QuestDB table mappings.",
     capabilities: ["history", "questdb-mapping", "graph-data"],
     extra: {
       dependencies: [health],
@@ -426,11 +363,7 @@ const rebuildActiveTopicSet = () => {
   }
 };
 
-type BufferedMqttEvent = {
-  mqttEvent: { topic: any; message: any };
-  eventId: string;
-  receivedAt: number;
-};
+type BufferedMqttEvent = { mqttEvent: { topic: any; message: any }; eventId: string; receivedAt: number };
 const inactiveBufferByTopic = new Map<string, BufferedMqttEvent[]>();
 const inactiveBufferEventIds = new Set<string>();
 
@@ -454,14 +387,7 @@ const bufferInactiveEvent = async (
   const spill = async (ev: BufferedMqttEvent, reason: string) => {
     inactiveBufferEventIds.delete(ev.eventId);
     try {
-      await saveEventToFile(
-        {
-          ...ev.mqttEvent,
-          bufferReason: reason,
-          bufferedAt: new Date(ev.receivedAt).toISOString(),
-        },
-        ev.eventId,
-      );
+      await saveEventToFile({ ...ev.mqttEvent, bufferReason: reason, bufferedAt: new Date(ev.receivedAt).toISOString() }, ev.eventId);
     } catch {
       // best-effort
     }
@@ -512,19 +438,12 @@ const bufferInactiveEvent = async (
 };
 
 const flushInactiveBuffer = async (): Promise<void> => {
-  const topicsToFlush = Array.from(inactiveBufferByTopic.keys()).filter((t) =>
-    activeTopicSet.has(t),
-  );
+  const topicsToFlush = Array.from(inactiveBufferByTopic.keys()).filter((t) => activeTopicSet.has(t));
   if (topicsToFlush.length === 0) return;
 
   if (traceIngestEnabled) {
-    const total = topicsToFlush.reduce(
-      (acc, t) => acc + (inactiveBufferByTopic.get(t)?.length ?? 0),
-      0,
-    );
-    logger.info(
-      `[trace][buffer] flush_start topics=${topicsToFlush.length} events=${total}`,
-    );
+    const total = topicsToFlush.reduce((acc, t) => acc + (inactiveBufferByTopic.get(t)?.length ?? 0), 0);
+    logger.info(`[trace][buffer] flush_start topics=${topicsToFlush.length} events=${total}`);
   }
 
   for (const t of topicsToFlush) {
@@ -537,20 +456,11 @@ const flushInactiveBuffer = async (): Promise<void> => {
     for (const ev of buffered) {
       inactiveBufferEventIds.delete(ev.eventId);
       try {
-        await processEvent(ev.mqttEvent, false, {
-          bypassActiveTopicCheck: true,
-        });
+        await processEvent(ev.mqttEvent, false, { bypassActiveTopicCheck: true });
       } catch (err) {
         // best-effort: spill to disk so we don't lose it
         try {
-          await saveEventToFile(
-            {
-              ...ev.mqttEvent,
-              bufferReason: "flush_error",
-              bufferedAt: new Date(ev.receivedAt).toISOString(),
-            },
-            ev.eventId,
-          );
+          await saveEventToFile({ ...ev.mqttEvent, bufferReason: "flush_error", bufferedAt: new Date(ev.receivedAt).toISOString() }, ev.eventId);
         } catch {
           // ignore
         }
@@ -563,10 +473,7 @@ const flushInactiveBuffer = async (): Promise<void> => {
     }
   }
 };
-type ObservedDataGroups = {
-  data: Set<string | null>;
-  table: Set<string | null>;
-};
+type ObservedDataGroups = { data: Set<string | null>; table: Set<string | null> };
 const observedDataGroupsByTopic = new Map<string, ObservedDataGroups>();
 
 const recordObservedDataGroup = (
@@ -588,10 +495,7 @@ const recordObservedDataGroup = (
   return true;
 };
 
-const getObservedDataGroups = (
-  topic: string,
-  suffix: "_data" | "_table",
-): Array<string | null> => {
+const getObservedDataGroups = (topic: string, suffix: "_data" | "_table"): Array<string | null> => {
   const normalizedTopic = sanitizeTopicName(topic);
   const observed = observedDataGroupsByTopic.get(normalizedTopic);
   const set = suffix === "_data" ? observed?.data : observed?.table;
@@ -624,9 +528,7 @@ try {
 
 if (isControllerManagedRuntime()) {
   if (!apiProxy) {
-    throw new Error(
-      "UNS Archiver did not start its API runtime, so it cannot register with the controller.",
-    );
+    throw new Error("UNS Archiver did not start its API runtime, so it cannot register with the controller.");
   }
   await registerArchiverService();
 }
@@ -635,16 +537,9 @@ setInterval(async () => {
   await refreshActiveTopics();
 }, TOPICS_REFRESH_INTERVAL);
 
-const scheduleStoredEventReplay = () => {
-  setTimeout(async () => {
-    try {
-      await processStoredEvents();
-    } finally {
-      if (!shuttingDown) scheduleStoredEventReplay();
-    }
-  }, storedReplayIntervalMs);
-};
-scheduleStoredEventReplay();
+setInterval(async () => {
+  await processStoredEvents();
+}, STORED_EVENTS_PROCESS_INTERVAL);
 
 setInterval(async () => {
   try {
@@ -667,9 +562,7 @@ setInterval(async () => {
   try {
     await refreshAndPublishQuestDbHealth();
   } catch (error) {
-    logger.warn(
-      `Failed to publish QuestDB dependency health: ${errorMessage(error)}`,
-    );
+    logger.warn(`Failed to publish QuestDB dependency health: ${errorMessage(error)}`);
   }
 }, QUESTDB_HEALTHCHECK_INTERVAL);
 
@@ -689,10 +582,7 @@ async function getPackageInfo(): Promise<{ name: string; version: string }> {
   try {
     const raw = await fs.readFile(packageJsonPath, "utf8");
     const parsed = JSON.parse(raw);
-    pkgInfo = {
-      name: parsed.name ?? "uns-archiver",
-      version: parsed.version ?? "0.0.0",
-    };
+    pkgInfo = { name: parsed.name ?? "uns-archiver", version: parsed.version ?? "0.0.0" };
   } catch {
     pkgInfo = { name: "uns-archiver", version: "0.0.0" };
   }
@@ -700,28 +590,22 @@ async function getPackageInfo(): Promise<{ name: string; version: string }> {
 }
 
 function isControllerManagedRuntime(): boolean {
-  return Boolean(
-    process.env.RTT_NODE?.trim() && process.env.RTT_INSTANCE_ID?.trim(),
-  );
+  return Boolean(process.env.RTT_NODE?.trim() && process.env.RTT_INSTANCE_ID?.trim());
 }
 
 async function registerArchiverService(): Promise<void> {
   if (!isControllerManagedRuntime()) return;
 
-  const controllerRestUrl =
-    typeof config.uns?.rest === "string" ? config.uns.rest.trim() : "";
+  const controllerRestUrl = typeof config.uns?.rest === "string" ? config.uns.rest.trim() : "";
   if (!controllerRestUrl) {
-    throw new Error(
-      "Controller-managed UNS Archiver requires config.uns.rest for service registration.",
-    );
+    throw new Error("Controller-managed UNS Archiver requires config.uns.rest for service registration.");
   }
 
   const packageInfo = await getPackageInfo();
   const registration = await registerService({
     client: new UnsClient(controllerRestUrl, {
       tokenProvider: new ServiceTokenProvider({
-        configToken:
-          typeof config.uns?.token === "string" ? config.uns.token : undefined,
+        configToken: typeof config.uns?.token === "string" ? config.uns.token : undefined,
       }),
     }),
     service: {
@@ -733,9 +617,7 @@ async function registerArchiverService(): Promise<void> {
     },
   });
   if (registration) {
-    logger.info(
-      `Registered controller-managed service ${registration.service.rttNode}/${registration.service.instanceId}.`,
-    );
+    logger.info(`Registered controller-managed service ${registration.service.rttNode}/${registration.service.instanceId}.`);
   }
 }
 
@@ -746,9 +628,7 @@ async function reloadConfig(): Promise<{ dataStorageChanged: boolean }> {
   config = updated;
   refreshArchiverRuntimeSettings();
   questDbWriter.configureBatch(config.questdb?.batch);
-  const previousDataStorage = JSON.stringify(
-    previous?.questdb?.dataStorage ?? [],
-  );
+  const previousDataStorage = JSON.stringify(previous?.questdb?.dataStorage ?? []);
   const updatedDataStorage = JSON.stringify(updated.questdb?.dataStorage ?? []);
   return { dataStorageChanged: previousDataStorage !== updatedDataStorage };
 }
@@ -791,7 +671,7 @@ async function publishQuestDbMapping() {
           dataGroup,
           suffix,
           topic,
-        })),
+        }))
       );
     });
     const mappings = mappingsFromTopics;
@@ -800,16 +680,12 @@ async function publishQuestDbMapping() {
       version: pkg.version,
       processName: config.uns?.processName ?? "uns-archiver",
       questdb: {
-        configurationString: resolveQuestDbPublicConfigurationString(
-          config.questdb,
-        ),
+        configurationString: resolveQuestDbPublicConfigurationString(config.questdb),
       },
       mappings,
       updatedAt: new Date().toISOString(),
     };
-    const hash = createHash("sha256")
-      .update(JSON.stringify(payload))
-      .digest("hex");
+    const hash = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
     if (hash === lastMappingHash) return;
     lastMappingHash = hash;
     const versionSegment = pkg.version.replace(/\./g, "-");
@@ -827,16 +703,12 @@ async function publishQuestDbMapping() {
         maxDelayMs: 2500,
         shouldRetry: isRetryableNetworkError,
         onRetry: ({ attempt, delayMs, error }) => {
-          logger.warn(
-            `QuestDB mapping publish retry (attempt ${attempt}) in ${delayMs}ms: ${errorMessage(error)}`,
-          );
+          logger.warn(`QuestDB mapping publish retry (attempt ${attempt}) in ${delayMs}ms: ${errorMessage(error)}`);
         },
       },
     );
   } catch (err) {
-    logger.error(
-      `Failed to publish QuestDB mapping: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    logger.error(`Failed to publish QuestDB mapping: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -852,40 +724,27 @@ async function setupApiProxy() {
     }) as UnsProxyProcessWithApi;
     serviceMetadataPublisher = processWithApi;
 
-    apiProxy = await processWithApi.createApiProxy(
-      "unsArchiverApi",
-      apiOptions,
-    );
+    apiProxy = await processWithApi.createApiProxy("unsArchiverApi", apiOptions);
     const apiBasePrefix =
-      normalizeBasePrefix(
-        process.env.UNS_API_BASE_PATH as string | undefined,
-      ) || normalizeBasePrefix(config.uns?.processName);
+      normalizeBasePrefix(process.env.UNS_API_BASE_PATH as string | undefined) ||
+      normalizeBasePrefix(config.uns?.processName);
     const swaggerBasePrefix =
-      normalizeBasePrefix(
-        process.env.UNS_SWAGGER_BASE_PATH as string | undefined,
-      ) || apiBasePrefix;
+      normalizeBasePrefix(process.env.UNS_SWAGGER_BASE_PATH as string | undefined) || apiBasePrefix;
 
     // Expose API and swagger under a custom base prefix to avoid clashing with the controller's /api
     const router = (apiProxy as any)?.app?.router;
     const expressApp = (apiProxy as any)?.app?.expressApplication;
     const originalRegister = apiProxy.registerApiEndpoint?.bind(apiProxy);
-    const processName =
-      (apiProxy as any)?.processName ?? config.uns.processName;
+    const processName = (apiProxy as any)?.processName ?? config.uns.processName;
     const instanceName = (apiProxy as any)?.instanceName ?? "unsArchiverApi";
 
     if (expressApp && router && apiBasePrefix) {
       expressApp.use(`${apiBasePrefix}/api`, router);
     }
-    if (
-      expressApp &&
-      swaggerBasePrefix &&
-      typeof (apiProxy as any)?.app?.getSwaggerSpec === "function"
-    ) {
+    if (expressApp && swaggerBasePrefix && typeof (apiProxy as any)?.app?.getSwaggerSpec === "function") {
       const swaggerPath = `/${processName}/${instanceName}/swagger.json`;
-      expressApp.get(
-        `${swaggerBasePrefix}${swaggerPath}`.replace(/\/{2,}/g, "/"),
-        (_req: any, res: any) =>
-          res.json((apiProxy as any).app.getSwaggerSpec()),
+      expressApp.get(`${swaggerBasePrefix}${swaggerPath}`.replace(/\/{2,}/g, "/"), (_req: any, res: any) =>
+        res.json((apiProxy as any).app.getSwaggerSpec())
       );
       const spec = (apiProxy as any).app.swaggerSpec;
       if (spec) {
@@ -898,10 +757,7 @@ async function setupApiProxy() {
           ? `${apiBasePrefix}${apiObject.apiEndpoint}`.replace(/\/{2,}/g, "/")
           : apiObject.apiEndpoint;
         const rebasedSwagger = swaggerBasePrefix
-          ? `${swaggerBasePrefix}${apiObject.apiSwaggerEndpoint}`.replace(
-              /\/{2,}/g,
-              "/",
-            )
+          ? `${swaggerBasePrefix}${apiObject.apiSwaggerEndpoint}`.replace(/\/{2,}/g, "/")
           : apiObject.apiSwaggerEndpoint;
         return originalRegister({
           ...apiObject,
@@ -918,8 +774,7 @@ async function setupApiProxy() {
         objectId: CONTROL_OBJECT_ID,
         attribute: "control",
         method: "GET",
-        description:
-          "Control archiver (action=pause|resume|status). Default is status.",
+        description: "Control archiver (action=pause|resume|status). Default is status.",
         tags: ["archiver", "control"],
         queryParams: [
           {
@@ -961,7 +816,7 @@ async function setupApiProxy() {
       CONTROL_OBJECT_TYPE,
       CONTROL_OBJECT_ID,
       "control",
-      serviceApiInteractions.control.options,
+      serviceApiInteractions.control.options
     );
     await apiProxy.get(
       CONTROL_TOPIC,
@@ -969,7 +824,7 @@ async function setupApiProxy() {
       CONTROL_OBJECT_TYPE,
       CONTROL_OBJECT_ID,
       "topics",
-      serviceApiInteractions.topics.options,
+      serviceApiInteractions.topics.options
     );
 
     await publishArchiverServiceMetadata();
@@ -1002,9 +857,7 @@ function buildApiOptions(): IApiProxyOptions {
     return {
       jwks: {
         wellKnownJwksUrl: config.uns.jwksWellKnownUrl,
-        ...(config.uns.kidWellKnownUrl
-          ? { activeKidUrl: config.uns.kidWellKnownUrl }
-          : {}),
+        ...(config.uns.kidWellKnownUrl ? { activeKidUrl: config.uns.kidWellKnownUrl } : {}),
       },
     };
   }
@@ -1021,9 +874,7 @@ function buildApiOptions(): IApiProxyOptions {
 
 async function handleApiGetEvent(event: any) {
   const path = event?.req?.path ?? "";
-  const action = (
-    event?.req?.query?.action as string | undefined
-  )?.toLowerCase();
+  const action = (event?.req?.query?.action as string | undefined)?.toLowerCase();
   try {
     if (path.endsWith("/control") && action === "pause") {
       ingestionPaused = true;
@@ -1033,17 +884,11 @@ async function handleApiGetEvent(event: any) {
     if (path.endsWith("/control") && action === "resume") {
       ingestionPaused = false;
       await processStoredEvents();
-      event.res.json({
-        paused: false,
-        queuedEvents: await countStoredEvents(),
-      });
+      event.res.json({ paused: false, queuedEvents: await countStoredEvents() });
       return;
     }
     if (path.endsWith("/control")) {
-      event.res.json({
-        paused: ingestionPaused,
-        queuedEvents: await countStoredEvents(),
-      });
+      event.res.json({ paused: ingestionPaused, queuedEvents: await countStoredEvents() });
       return;
     }
     if (path.endsWith("/topics")) {
@@ -1057,9 +902,7 @@ async function handleApiGetEvent(event: any) {
         questDbBatch: questDbWriter.getBatchDiagnostics(),
         ingestQueue: ingestQueue?.snapshot(),
         processedEventIdsSize: processedEventIds.size,
-        lastTopicsRefreshAt: lastTopicsRefreshAt
-          ? new Date(lastTopicsRefreshAt).toISOString()
-          : null,
+        lastTopicsRefreshAt: lastTopicsRefreshAt ? new Date(lastTopicsRefreshAt).toISOString() : null,
       });
       return;
     }
@@ -1080,9 +923,7 @@ async function subscribeToTopics(topics: string[]) {
   const ds = config.questdb.dataStorage;
   const topicFilters: string[] = ds.map((item) => item.topic);
 
-  const hasWildcards = topicFilters.some(
-    (filter) => filter.includes("#") || filter.includes("+"),
-  );
+  const hasWildcards = topicFilters.some((filter) => filter.includes("#") || filter.includes("+"));
 
   // If we already subscribe to broad wildcard filters (recommended), adding concrete active topics is redundant
   // and can cause duplicate deliveries on some brokers.
@@ -1091,11 +932,7 @@ async function subscribeToTopics(topics: string[]) {
     : Array.from(
         new Set([
           ...topicFilters,
-          ...(topics ?? []).filter((topic) =>
-            topicFilters.some((topicFilter) =>
-              TopicMatcher.matches(topicFilter, topic),
-            ),
-          ),
+          ...(topics ?? []).filter((topic) => topicFilters.some((topicFilter) => TopicMatcher.matches(topicFilter, topic))),
         ]),
       ).filter(Boolean);
 
@@ -1129,7 +966,7 @@ async function subscribeToTopics(topics: string[]) {
         ...mqttChannelParameters(inputChannel),
         mqttSubToTopics: desiredTopics,
         subscribeThrottlingDelay: 0,
-      },
+      }
     );
     mqttInput.event.on("input", (mqttEvent) => {
       try {
@@ -1167,13 +1004,10 @@ function refreshActiveTopics(): Promise<void> {
 
   activeTopicsRefreshPromise = (async () => {
     try {
-      const { topics, metaByTopic } =
-        await ActiveUnsTopics.getActiveUnsTopics();
+      const { topics, metaByTopic } = await ActiveUnsTopics.getActiveUnsTopics();
       const newActiveTopics = canonicalizeTopics(topics);
       if (newActiveTopics.join("\u0000") !== activeTopics.join("\u0000")) {
-        logger.info(
-          "Active topic registry changed. Updating active-topic gate and MQTT subscriptions.",
-        );
+        logger.info("Active topic registry changed. Updating active-topic gate and MQTT subscriptions.");
         activeTopics = newActiveTopics;
         topicMetadata = metaByTopic;
         rebuildActiveTopicSet();
@@ -1206,7 +1040,7 @@ function refreshActiveTopics(): Promise<void> {
 async function processEvent(
   mqttEvent: { topic: any; message: any },
   fromStorage = false,
-  options?: { bypassActiveTopicCheck?: boolean },
+  options?: { bypassActiveTopicCheck?: boolean }
 ): Promise<boolean> {
   const inputTopic = mqttEvent.topic ?? "";
   const traceIngest = traceIngestEnabled;
@@ -1241,20 +1075,14 @@ async function processEvent(
       fromStorage,
     );
     if (deduplication === "defer-inflight") {
-      logger.debug(
-        "Stored event replay deferred an event that is still in flight.",
-      );
+      logger.debug("Stored event replay deferred an event that is still in flight.");
       return false;
     }
     if (deduplication === "skip-confirmed") {
       if (traceIngest) {
-        logger.info(
-          `[trace][ingest] dup_skip eventId=${eventId} topic='${String(inputTopic)}'`,
-        );
+        logger.info(`[trace][ingest] dup_skip eventId=${eventId} topic='${String(inputTopic)}'`);
       } else {
-        logger.info(
-          `Event with ID ${eventId} on topic '${inputTopic}' has already been processed. Skipping.`,
-        );
+        logger.info(`Event with ID ${eventId} on topic '${inputTopic}' has already been processed. Skipping.`);
       }
       return true;
     }
@@ -1289,40 +1117,27 @@ async function processEvent(
       return true;
     }
 
+
     // Handle UNS packet
     const unsPacket = UnsPacket.parseMqttPacket(mqttEvent.message);
     if (!unsPacket) {
-      logger.warn(
-        `Dropping invalid/unsupported UNS packet on topic '${inputTopic}'.`,
-      );
+      logger.warn(`Dropping invalid/unsupported UNS packet on topic '${inputTopic}'.`);
       inflightEventIds.delete(eventId);
       return true;
     }
 
     if (!unsPacket.message.data && !unsPacket.message.table) {
-      logger.debug(
-        `Dropping non data/table UNS packet on topic '${inputTopic}'.`,
-      );
+      logger.debug(`Dropping non data/table UNS packet on topic '${inputTopic}'.`);
       inflightEventIds.delete(eventId);
       return true;
     }
 
     let mappingUpdated = false;
     if (unsPacket.message.data) {
-      mappingUpdated =
-        recordObservedDataGroup(
-          inputTopic,
-          "data",
-          unsPacket.message.data.dataGroup,
-        ) || mappingUpdated;
+      mappingUpdated = recordObservedDataGroup(inputTopic, "data", unsPacket.message.data.dataGroup) || mappingUpdated;
     }
     if (unsPacket.message.table) {
-      mappingUpdated =
-        recordObservedDataGroup(
-          inputTopic,
-          "table",
-          unsPacket.message.table.dataGroup,
-        ) || mappingUpdated;
+      mappingUpdated = recordObservedDataGroup(inputTopic, "table", unsPacket.message.table.dataGroup) || mappingUpdated;
     }
     if (mappingUpdated) {
       await publishQuestDbMapping();
@@ -1336,42 +1151,17 @@ async function processEvent(
     const ingestMode = resolveIngestMode(storage, unsPacket);
 
     if (traceIngest) {
-      const kind = unsPacket.message.table
-        ? "table"
-        : unsPacket.message.data
-          ? "data"
-          : "other";
-      const group =
-        unsPacket.message.table?.dataGroup ??
-        unsPacket.message.data?.dataGroup ??
-        "";
-      const time =
-        unsPacket.message.table?.time ?? unsPacket.message.data?.time ?? "";
-      const intervalStart =
-        (unsPacket.message.table as any)?.intervalStart ??
-        (unsPacket.message.data as any)?.intervalStart ??
-        null;
-      const intervalEnd =
-        (unsPacket.message.table as any)?.intervalEnd ??
-        (unsPacket.message.data as any)?.intervalEnd ??
-        null;
-      const windowStart =
-        (unsPacket.message.table as any)?.windowStart ??
-        (unsPacket.message.data as any)?.windowStart ??
-        null;
-      const windowEnd =
-        (unsPacket.message.table as any)?.windowEnd ??
-        (unsPacket.message.data as any)?.windowEnd ??
-        null;
-      const deleted =
-        (unsPacket.message.table as any)?.deleted ??
-        (unsPacket.message.data as any)?.deleted ??
-        false;
+      const kind = unsPacket.message.table ? "table" : unsPacket.message.data ? "data" : "other";
+      const group = unsPacket.message.table?.dataGroup ?? unsPacket.message.data?.dataGroup ?? "";
+      const time = unsPacket.message.table?.time ?? unsPacket.message.data?.time ?? "";
+      const intervalStart = (unsPacket.message.table as any)?.intervalStart ?? (unsPacket.message.data as any)?.intervalStart ?? null;
+      const intervalEnd = (unsPacket.message.table as any)?.intervalEnd ?? (unsPacket.message.data as any)?.intervalEnd ?? null;
+      const windowStart = (unsPacket.message.table as any)?.windowStart ?? (unsPacket.message.data as any)?.windowStart ?? null;
+      const windowEnd = (unsPacket.message.table as any)?.windowEnd ?? (unsPacket.message.data as any)?.windowEnd ?? null;
+      const deleted = (unsPacket.message.table as any)?.deleted ?? (unsPacket.message.data as any)?.deleted ?? false;
       const tableColumns = (unsPacket.message.table as any)?.columns;
       const colsCount =
-        tableColumns &&
-        typeof tableColumns === "object" &&
-        !Array.isArray(tableColumns)
+        tableColumns && typeof tableColumns === "object" && !Array.isArray(tableColumns)
           ? Object.keys(tableColumns).length
           : 0;
       logger.info(
@@ -1379,18 +1169,10 @@ async function processEvent(
       );
     }
 
-    await questDbWriter.writeUnsPacket(
-      unsPacket,
-      matchingTable,
-      inputTopic,
-      meta,
-      ingestMode,
-    );
+    await questDbWriter.writeUnsPacket(unsPacket, matchingTable, inputTopic, meta, ingestMode);
 
     if (traceIngest) {
-      logger.info(
-        `[trace][ingest] wrote eventId=${eventId} topic='${String(inputTopic)}' at=${new Date().toISOString()}`,
-      );
+      logger.info(`[trace][ingest] wrote eventId=${eventId} topic='${String(inputTopic)}' at=${new Date().toISOString()}`);
     }
 
     // Mark the event as processed
@@ -1415,9 +1197,7 @@ async function processEvent(
 
     logger.error(`Error processing event: ${error?.message ?? String(error)}`);
     if (error instanceof NonRetryableError) {
-      logger.warn(
-        `Dropping non-retryable event on topic '${inputTopic}': ${error.message}`,
-      );
+      logger.warn(`Dropping non-retryable event on topic '${inputTopic}': ${error.message}`);
       return true;
     }
     if (!fromStorage) {
@@ -1472,7 +1252,10 @@ async function countStoredEvents(): Promise<number> {
  * @param mqttEvent - The MQTT event to save.
  * @param eventId - The unique ID of the event.
  */
-async function saveEventToFile(mqttEvent: any, eventId: string) {
+async function saveEventToFile(
+  mqttEvent: any,
+  eventId: string
+) {
   // Attach the ID to the event
   const eventWithId = { id: eventId, ...mqttEvent };
 
@@ -1501,9 +1284,7 @@ async function saveEventToFile(mqttEvent: any, eventId: string) {
     } catch (error: any) {
       if (error?.code === "EEXIST") {
         await fs.unlink(tempFileName).catch(() => undefined);
-        logger.debug(
-          `Event already queued on disk during rename: ${uniqueFileName}`,
-        );
+        logger.debug(`Event already queued on disk during rename: ${uniqueFileName}`);
         return;
       }
       throw error;
@@ -1531,18 +1312,13 @@ function saveEventToFileSync(mqttEvent: any, eventId: string): void {
       logger.debug(`Event already queued on disk: ${uniqueFileName}`);
       return;
     }
-    writeFileSync(tempFileName, JSON.stringify(eventWithId), {
-      encoding: "utf-8",
-      flag: "wx",
-    });
+    writeFileSync(tempFileName, JSON.stringify(eventWithId), { encoding: "utf-8", flag: "wx" });
     try {
       renameSync(tempFileName, finalFileName);
     } catch (error: any) {
       if (error?.code === "EEXIST") {
         unlinkSync(tempFileName);
-        logger.debug(
-          `Event already queued on disk during rename: ${uniqueFileName}`,
-        );
+        logger.debug(`Event already queued on disk during rename: ${uniqueFileName}`);
         return;
       }
       throw error;
