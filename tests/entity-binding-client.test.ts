@@ -133,6 +133,50 @@ test("invalidates only cache entries for affected topics", async () => {
   assert.equal(calls, 3);
 });
 
+test("re-resolves a delayed old-topic packet by event time after a cutover invalidation", async () => {
+  const cutover = "2026-09-03T10:00:00.000Z";
+  const delayedEventTime = "2026-09-03T09:59:59.000Z";
+  const client = new ArchiverEntityBindingClient({
+    graphqlUrl: "http://controller/graphql",
+    tokenProvider: { getAccessToken: async () => "service-token" },
+    fetchImpl: async (_input, init) => {
+      const asOf = JSON.parse(String(init?.body)).variables.asOf as string;
+      const response = asOf < cutover
+        ? {
+            ...resolution("12"),
+            asOf,
+            validFrom: "2026-09-03T09:00:00.000Z",
+            validTo: cutover,
+          }
+        : {
+            topic,
+            asOf,
+            status: "not-found",
+            stableEntityId: null,
+            entityTypeKey: null,
+            bindingKind: null,
+            matchedPath: null,
+            validFrom: null,
+            validTo: null,
+            timeBasis: null,
+            sourceCount: 0,
+            revision: null,
+            digest: null,
+          };
+      return jsonResponse({ data: { ResolveEntityObservationBindings: [response] } });
+    },
+  });
+
+  client.invalidateTopics([topic]);
+  const delayed = await client.resolveTopic(topic, delayedEventTime);
+  assert.equal(delayed.source, "controller");
+  assert.equal(delayed.resolution?.stableEntityId, "11111111-1111-4111-8111-111111111111");
+  assert.equal(delayed.resolution?.validTo, cutover);
+
+  const boundary = await client.resolveTopic(topic, cutover);
+  assert.equal(boundary.resolution?.status, "not-found");
+});
+
 test("uses stale revision evidence only inside the bounded outage window", async () => {
   let now = 1_000;
   let unavailable = false;
