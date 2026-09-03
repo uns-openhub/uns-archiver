@@ -37,6 +37,12 @@ import { resolveEventDeduplicationDisposition } from "./event-deduplication.js";
 import { StoredEventReplay } from "./stored-event-replay.js";
 import { ArchiverEntityBindingClient } from "./entity-binding-client.js";
 import {
+  DEFAULT_ENTITY_SCOPE_KEY,
+  ENTITY_BINDING_INVALIDATION_TOPIC,
+  isNewerBindingRevision,
+  parseEntityBindingInvalidation,
+} from "./entity-binding-invalidation.js";
+import {
   decideEntityResolution,
   resolvedEnvelopeEvidence,
   type PersistedEntityResolutionEnvelope,
@@ -200,6 +206,10 @@ type EntityIdentityDiagnostics = {
   retryQueued: number;
   retryExpired: number;
   controllerUnavailable: number;
+  bindingInvalidations: number;
+  invalidatedCacheEntries: number;
+  lastBindingInvalidationRevision: string | null;
+  lastBindingInvalidationAt: string | null;
   lastOutcome: string | null;
   lastOutcomeAt: string | null;
 };
@@ -230,6 +240,10 @@ const identityDiagnostics: EntityIdentityDiagnostics = {
   retryQueued: 0,
   retryExpired: 0,
   controllerUnavailable: 0,
+  bindingInvalidations: 0,
+  invalidatedCacheEntries: 0,
+  lastBindingInvalidationRevision: null,
+  lastBindingInvalidationAt: null,
   lastOutcome: null,
   lastOutcomeAt: null,
 };
@@ -625,9 +639,11 @@ scheduleStoredEventReplay();
 
 setInterval(async () => {
   try {
-    const { dataStorageChanged } = await reloadConfig();
-    if (dataStorageChanged) {
+    const { dataStorageChanged, identitySubscriptionChanged } = await reloadConfig();
+    if (dataStorageChanged || identitySubscriptionChanged) {
       await subscribeToTopics(activeTopics);
+    }
+    if (dataStorageChanged) {
       await publishQuestDbMapping();
     }
   } catch (error) {
@@ -703,8 +719,9 @@ async function registerArchiverService(): Promise<void> {
   }
 }
 
-async function reloadConfig(): Promise<{ dataStorageChanged: boolean }> {
+async function reloadConfig(): Promise<{ dataStorageChanged: boolean; identitySubscriptionChanged: boolean }> {
   const previous = config;
+  const previousIdentityEnrichmentEnabled = identityEnrichmentEnabled;
   ConfigFile.clearCache();
   const updated = await ConfigFile.loadConfig();
   config = updated;
@@ -713,7 +730,10 @@ async function reloadConfig(): Promise<{ dataStorageChanged: boolean }> {
   questDbWriter.configureBatch(config.questdb?.batch);
   const previousDataStorage = JSON.stringify(previous?.questdb?.dataStorage ?? []);
   const updatedDataStorage = JSON.stringify(updated.questdb?.dataStorage ?? []);
-  return { dataStorageChanged: previousDataStorage !== updatedDataStorage };
+  return {
+    dataStorageChanged: previousDataStorage !== updatedDataStorage,
+    identitySubscriptionChanged: previousIdentityEnrichmentEnabled !== identityEnrichmentEnabled,
+  };
 }
 
 async function findNearestPackageJson(): Promise<string | null> {
@@ -1016,7 +1036,7 @@ async function subscribeToTopics(topics: string[]) {
 
   // If we already subscribe to broad wildcard filters (recommended), adding concrete active topics is redundant
   // and can cause duplicate deliveries on some brokers.
-  const requestedTopics = hasWildcards
+  const dataTopics = hasWildcards
     ? topicFilters.filter(Boolean)
     : Array.from(
         new Set([
@@ -1024,6 +1044,9 @@ async function subscribeToTopics(topics: string[]) {
           ...(topics ?? []).filter((topic) => topicFilters.some((topicFilter) => TopicMatcher.matches(topicFilter, topic))),
         ]),
       ).filter(Boolean);
+  const requestedTopics = identityEnrichmentEnabled
+    ? Array.from(new Set([...dataTopics, ENTITY_BINDING_INVALIDATION_TOPIC]))
+    : dataTopics;
 
   const desiredTopics = minimizeSubscriptionFilters(requestedTopics);
 
@@ -1059,6 +1082,10 @@ async function subscribeToTopics(topics: string[]) {
     );
     mqttInput.event.on("input", (mqttEvent) => {
       try {
+        if (String(mqttEvent?.topic ?? "") === ENTITY_BINDING_INVALIDATION_TOPIC) {
+          handleEntityBindingInvalidation(mqttEvent?.message);
+          return;
+        }
         const eventId = generateEventId(mqttEvent);
         ingestQueue!.enqueue({
           id: eventId,
@@ -1083,6 +1110,34 @@ async function subscribeToTopics(topics: string[]) {
     }
     subscribedTopicFilters = delta.next;
   }
+}
+
+function handleEntityBindingInvalidation(message: unknown): void {
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(Buffer.isBuffer(message) ? message.toString("utf8") : String(message ?? ""));
+  } catch {
+    logger.warn("Ignored malformed entity binding invalidation payload.");
+    return;
+  }
+  const invalidation = parseEntityBindingInvalidation(decoded);
+  if (!invalidation) {
+    logger.warn("Ignored invalid entity binding invalidation payload.");
+    return;
+  }
+  if (invalidation.scopeKey !== DEFAULT_ENTITY_SCOPE_KEY) return;
+  if (!isNewerBindingRevision(
+    invalidation.bindingRevision,
+    identityDiagnostics.lastBindingInvalidationRevision,
+  )) return;
+  const invalidatedEntries = identityBindingClient?.invalidateTopics(invalidation.topicPaths) ?? 0;
+  identityDiagnostics.bindingInvalidations += 1;
+  identityDiagnostics.invalidatedCacheEntries += invalidatedEntries;
+  identityDiagnostics.lastBindingInvalidationRevision = invalidation.bindingRevision;
+  identityDiagnostics.lastBindingInvalidationAt = new Date().toISOString();
+  logger.info(
+    `Applied entity binding revision ${invalidation.bindingRevision}; invalidated ${invalidatedEntries} cached resolution(s) across ${invalidation.topicPaths.length} topic path(s).`,
+  );
 }
 
 /**

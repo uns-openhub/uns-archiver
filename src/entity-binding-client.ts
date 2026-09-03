@@ -185,6 +185,20 @@ export class ArchiverEntityBindingClient {
     this.cacheKeysByTopic.clear();
   }
 
+  invalidateTopics(topicValues: string[]): number {
+    let removed = 0;
+    for (const topicValue of new Set(topicValues)) {
+      const topic = normalizeTopic(topicValue);
+      const keys = this.cacheKeysByTopic.get(topic);
+      if (!keys) continue;
+      for (const key of keys) {
+        if (this.cache.delete(key)) removed += 1;
+      }
+      this.cacheKeysByTopic.delete(topic);
+    }
+    return removed;
+  }
+
   snapshot(): { entries: number; maxEntries: number } {
     return { entries: this.cache.size, maxEntries: this.maxCacheEntries };
   }

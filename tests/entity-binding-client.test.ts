@@ -107,6 +107,32 @@ test("keeps event-time cache keys separate and evicts least-recently-used entrie
   assert.equal(calls, 4);
 });
 
+test("invalidates only cache entries for affected topics", async () => {
+  let calls = 0;
+  const otherTopic = "site/line-a/press-15/equipment/main/temperature";
+  const client = new ArchiverEntityBindingClient({
+    graphqlUrl: "http://controller/graphql",
+    tokenProvider: { getAccessToken: async () => "service-token" },
+    fetchImpl: async (_input, init) => {
+      calls += 1;
+      const requestedTopic = JSON.parse(String(init?.body)).variables.topics[0] as string;
+      return jsonResponse({ data: { ResolveEntityObservationBindings: [{
+        ...resolution(String(calls)),
+        topic: requestedTopic,
+        matchedPath: requestedTopic,
+      }] } });
+    },
+  });
+  await client.resolveTopic(topic, "2026-09-03T10:00:00Z");
+  await client.resolveTopic(otherTopic, "2026-09-03T10:00:00Z");
+
+  assert.equal(client.invalidateTopics([topic]), 1);
+  assert.deepEqual(client.snapshot(), { entries: 1, maxEntries: 10_000 });
+  assert.equal((await client.resolveTopic(otherTopic, "2026-09-03T10:10:00Z")).source, "cache");
+  assert.equal((await client.resolveTopic(topic, "2026-09-03T10:10:00Z")).source, "controller");
+  assert.equal(calls, 3);
+});
+
 test("uses stale revision evidence only inside the bounded outage window", async () => {
   let now = 1_000;
   let unavailable = false;
