@@ -1,4 +1,5 @@
 import {
+  AuthClient,
   UnsProxyProcess,
   ConfigFile,
   logger,
@@ -7,6 +8,7 @@ import {
   resolveMqttChannel,
   ServiceTokenProvider,
   UnsClient,
+  type AccessTokenProvider,
   type IApiProxyOptions,
 } from "@uns-kit/core";
 import UnsMqttProxy from "@uns-kit/core/uns-mqtt/uns-mqtt-proxy.js";
@@ -33,6 +35,13 @@ import { BoundedIngestQueue } from "./bounded-ingest-queue.js";
 import { drainArchiverForShutdown } from "./archiver-shutdown.js";
 import { resolveEventDeduplicationDisposition } from "./event-deduplication.js";
 import { StoredEventReplay } from "./stored-event-replay.js";
+import { ArchiverEntityBindingClient } from "./entity-binding-client.js";
+import {
+  decideEntityResolution,
+  resolvedEnvelopeEvidence,
+  type PersistedEntityResolutionEnvelope,
+} from "./entity-resolution-policy.js";
+import type { QuestDbEntityIdentityEvidence } from "./writers/questDbWriter.js";
 import {
   hasStoredReplayLiveHeadroom,
   resolveStoredReplayLimits,
@@ -170,7 +179,29 @@ type ArchiverRuntimeConfig = {
   ingestConcurrency?: number;
   storedReplayBatchSize?: number;
   storedReplayIntervalMs?: number;
+  identityEnrichmentEnabled?: boolean;
+  identityResolutionRetryMaxAgeMs?: number;
   traceIngest?: boolean;
+};
+
+type ArchiverMqttEvent = {
+  topic: any;
+  message: any;
+  _archiverIdentity?: PersistedEntityResolutionEnvelope;
+  [key: string]: unknown;
+};
+
+type EntityIdentityDiagnostics = {
+  resolved: number;
+  legacyUnresolved: number;
+  legacyAmbiguous: number;
+  legacyInexact: number;
+  legacyInvalid: number;
+  retryQueued: number;
+  retryExpired: number;
+  controllerUnavailable: number;
+  lastOutcome: string | null;
+  lastOutcomeAt: string | null;
 };
 
 const resolveTraceIngestFromEnv = (): boolean =>
@@ -184,7 +215,31 @@ let ingestQueueMaxBytes = 16 * 1024 * 1024;
 let ingestConcurrency = 1;
 let storedReplayBatchSize = 64;
 let storedReplayIntervalMs = 5_000;
-let ingestQueue: BoundedIngestQueue<{ topic: any; message: any }> | undefined;
+let identityEnrichmentEnabled = false;
+let identityResolutionRetryMaxAgeMs = 30_000;
+let ingestQueue: BoundedIngestQueue<ArchiverMqttEvent> | undefined;
+let identityBindingClient: ArchiverEntityBindingClient | undefined;
+let identityBindingClientSignature = "";
+let legacyIdentityAuthClient: Promise<AuthClient | null> | undefined;
+const identityDiagnostics: EntityIdentityDiagnostics = {
+  resolved: 0,
+  legacyUnresolved: 0,
+  legacyAmbiguous: 0,
+  legacyInexact: 0,
+  legacyInvalid: 0,
+  retryQueued: 0,
+  retryExpired: 0,
+  controllerUnavailable: 0,
+  lastOutcome: null,
+  lastOutcomeAt: null,
+};
+
+const legacyIdentityAuthFallback: AccessTokenProvider = {
+  async getAccessToken(): Promise<string | undefined> {
+    legacyIdentityAuthClient ??= AuthClient.create().catch(() => null);
+    return (await legacyIdentityAuthClient)?.getAccessToken();
+  },
+};
 
 const resolvePositiveInteger = (value: unknown, fallback: number): number =>
   typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
@@ -223,6 +278,11 @@ const refreshArchiverRuntimeSettings = () => {
       5_000,
     ),
   );
+  identityEnrichmentEnabled = cfg?.identityEnrichmentEnabled ?? false;
+  identityResolutionRetryMaxAgeMs = resolvePositiveInteger(
+    cfg?.identityResolutionRetryMaxAgeMs,
+    30_000,
+  );
   ingestQueue?.configure({
     maxPendingEvents: ingestQueueMaxEvents,
     maxPendingBytes: ingestQueueMaxBytes,
@@ -230,7 +290,30 @@ const refreshArchiverRuntimeSettings = () => {
   });
 };
 
+const refreshIdentityBindingClient = () => {
+  const graphqlUrl = typeof config.uns?.graphql === "string" ? config.uns.graphql.trim() : "";
+  const configToken = typeof config.uns?.token === "string" ? config.uns.token : undefined;
+  const signature = identityEnrichmentEnabled ? `${graphqlUrl}\0${configToken ?? ""}` : "disabled";
+  if (signature === identityBindingClientSignature) return;
+  identityBindingClient?.invalidate();
+  identityBindingClientSignature = signature;
+  identityBindingClient = identityEnrichmentEnabled && graphqlUrl
+    ? new ArchiverEntityBindingClient({
+        graphqlUrl,
+        tokenProvider: new ServiceTokenProvider({
+          configToken,
+          fallback: legacyIdentityAuthFallback,
+        }),
+        timeoutMs: 5_000,
+        cacheTtlMs: 30_000,
+        staleIfErrorMs: 5 * 60_000,
+        maxCacheEntries: 10_000,
+      })
+    : undefined;
+};
+
 refreshArchiverRuntimeSettings();
+refreshIdentityBindingClient();
 logger.info(
   `Archiver ingest trace is ${traceIngestEnabled ? "ENABLED" : "DISABLED"} (set UNS_ARCHIVER_TRACE=1 to enable).`,
 );
@@ -626,6 +709,7 @@ async function reloadConfig(): Promise<{ dataStorageChanged: boolean }> {
   const updated = await ConfigFile.loadConfig();
   config = updated;
   refreshArchiverRuntimeSettings();
+  refreshIdentityBindingClient();
   questDbWriter.configureBatch(config.questdb?.batch);
   const previousDataStorage = JSON.stringify(previous?.questdb?.dataStorage ?? []);
   const updatedDataStorage = JSON.stringify(updated.questdb?.dataStorage ?? []);
@@ -901,6 +985,12 @@ async function handleApiGetEvent(event: any) {
         questDbBatch: questDbWriter.getBatchDiagnostics(),
         ingestQueue: ingestQueue?.snapshot(),
         processedEventIdsSize: processedEventIds.size,
+        entityIdentity: {
+          enabled: identityEnrichmentEnabled,
+          retryMaxAgeMs: identityResolutionRetryMaxAgeMs,
+          cache: identityBindingClient?.snapshot() ?? null,
+          ...identityDiagnostics,
+        },
         lastTopicsRefreshAt: lastTopicsRefreshAt ? new Date(lastTopicsRefreshAt).toISOString() : null,
       });
       return;
@@ -1036,8 +1126,79 @@ function refreshActiveTopics(): Promise<void> {
  * @param fromStorage - Indicates if the event is from storage.
  * @returns A boolean indicating success or failure.
  */
+function recordIdentityOutcome(outcome: string): void {
+  identityDiagnostics.lastOutcome = outcome;
+  identityDiagnostics.lastOutcomeAt = new Date().toISOString();
+  switch (outcome) {
+    case "resolved": identityDiagnostics.resolved += 1; break;
+    case "unresolved": identityDiagnostics.legacyUnresolved += 1; break;
+    case "ambiguous": identityDiagnostics.legacyAmbiguous += 1; break;
+    case "inexact": identityDiagnostics.legacyInexact += 1; break;
+    case "invalid": identityDiagnostics.legacyInvalid += 1; break;
+    case "retry": identityDiagnostics.retryQueued += 1; break;
+    case "retry-expired": identityDiagnostics.retryExpired += 1; break;
+  }
+}
+
+function resolvePacketEventTime(unsPacket: any): string | null {
+  const raw = unsPacket.message.table?.time ?? unsPacket.message.data?.time;
+  if (typeof raw !== "string" && typeof raw !== "number" && !(raw instanceof Date)) return null;
+  const parsed = raw instanceof Date ? raw : new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+async function resolveEntityIdentityForWrite(
+  mqttEvent: ArchiverMqttEvent,
+  topic: string,
+  unsPacket: any,
+): Promise<{ retry: boolean; evidence: QuestDbEntityIdentityEvidence | null }> {
+  if (!identityEnrichmentEnabled) return { retry: false, evidence: null };
+  const eventTime = resolvePacketEventTime(unsPacket);
+  if (!eventTime) {
+    recordIdentityOutcome("invalid");
+    return { retry: false, evidence: null };
+  }
+
+  const persistedEvidence = resolvedEnvelopeEvidence(mqttEvent._archiverIdentity, topic, eventTime);
+  if (persistedEvidence) {
+    recordIdentityOutcome("resolved");
+    return { retry: false, evidence: persistedEvidence };
+  }
+
+  let decision;
+  try {
+    if (!identityBindingClient) throw new Error("Controller identity binding client is unavailable");
+    const result = await identityBindingClient.resolveTopic(topic, eventTime);
+    decision = decideEntityResolution(
+      { topic, eventTime, resolution: result.resolution, persistedEnvelope: mqttEvent._archiverIdentity },
+      { now: new Date().toISOString(), retryMaxAgeMs: identityResolutionRetryMaxAgeMs },
+    );
+  } catch (controllerError) {
+    identityDiagnostics.controllerUnavailable += 1;
+    decision = decideEntityResolution(
+      { topic, eventTime, controllerError, persistedEnvelope: mqttEvent._archiverIdentity },
+      { now: new Date().toISOString(), retryMaxAgeMs: identityResolutionRetryMaxAgeMs },
+    );
+  }
+
+  if (decision.action === "retry") {
+    mqttEvent._archiverIdentity = decision.envelope;
+    recordIdentityOutcome("retry");
+    return { retry: true, evidence: null };
+  }
+  if (decision.action === "enriched-write") {
+    mqttEvent._archiverIdentity = decision.envelope;
+    recordIdentityOutcome("resolved");
+    return { retry: false, evidence: decision.evidence };
+  }
+
+  delete mqttEvent._archiverIdentity;
+  recordIdentityOutcome(decision.reason);
+  return { retry: false, evidence: null };
+}
+
 async function processEvent(
-  mqttEvent: { topic: any; message: any },
+  mqttEvent: ArchiverMqttEvent,
   fromStorage = false,
   options?: { bypassActiveTopicCheck?: boolean }
 ): Promise<boolean> {
@@ -1174,7 +1335,21 @@ async function processEvent(
       );
     }
 
-    await questDbWriter.writeUnsPacket(unsPacket, matchingTable, inputTopic, meta, ingestMode);
+    const entityIdentity = await resolveEntityIdentityForWrite(mqttEvent, String(inputTopic), unsPacket);
+    if (entityIdentity.retry) {
+      inflightEventIds.delete(eventId);
+      if (!fromStorage) await saveEventToFile(mqttEvent, eventId);
+      return false;
+    }
+
+    await questDbWriter.writeUnsPacket(
+      unsPacket,
+      matchingTable,
+      inputTopic,
+      meta,
+      ingestMode,
+      entityIdentity.evidence ?? undefined,
+    );
 
     if (traceIngest) {
       logger.info(`[trace][ingest] wrote eventId=${eventId} topic='${String(inputTopic)}' at=${new Date().toISOString()}`);

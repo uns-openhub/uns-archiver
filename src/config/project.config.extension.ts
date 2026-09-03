@@ -73,6 +73,20 @@ export const projectExtrasSchema = z.object({
         .describe(
           "Delay in milliseconds between completed durable replay passes (default 5000). Lower values drain backlogs faster but add QuestDB load.",
         ),
+      identityEnrichmentEnabled: z
+        .boolean()
+        .optional()
+        .describe(
+          "Enrich QuestDB rows with controller-issued stable entity identity evidence. Disabled by default for a backward-compatible staged rollout.",
+        ),
+      identityResolutionRetryMaxAgeMs: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          "Maximum time in milliseconds to retain an event while exact entity identity resolution is temporarily unavailable (default 30000). After this bound the event is written in legacy form.",
+        ),
       traceIngest: z
         .boolean()
         .optional()

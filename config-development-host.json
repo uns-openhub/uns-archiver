@@ -23,6 +23,8 @@
     "ingestConcurrency": 1,
     "storedReplayBatchSize": 64,
     "storedReplayIntervalMs": 5000,
+    "identityEnrichmentEnabled": false,
+    "identityResolutionRetryMaxAgeMs": 30000,
     "traceIngest": false
   },
   "questdb": {

@@ -67,6 +67,8 @@ test("configuration profiles are schema-valid and topology-specific", () => {
       profile.replayBatchSize,
     );
     assert.equal(config.archiver.storedReplayIntervalMs, 5000);
+    assert.equal(config.archiver.identityEnrichmentEnabled, false);
+    assert.equal(config.archiver.identityResolutionRetryMaxAgeMs, 30000);
   }
 });
 
@@ -86,6 +88,8 @@ test("the Podman profile keeps live ingest ahead of the local MQTT rate", () => 
     ingestConcurrency: 64,
     storedReplayBatchSize: 8,
     storedReplayIntervalMs: 5000,
+    identityEnrichmentEnabled: false,
+    identityResolutionRetryMaxAgeMs: 30000,
     traceIngest: false,
   });
   assert.deepEqual(config.questdb.batch, {

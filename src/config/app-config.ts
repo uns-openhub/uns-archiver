@@ -172,6 +172,10 @@ export interface ProjectAppConfig {
         storedReplayBatchSize?: number | undefined;
         /** Delay in milliseconds between completed durable replay passes (default 5000). Lower values drain backlogs faster but add QuestDB load. */
         storedReplayIntervalMs?: number | undefined;
+        /** Enrich QuestDB rows with controller-issued stable entity identity evidence. Disabled by default for a backward-compatible staged rollout. */
+        identityEnrichmentEnabled?: boolean | undefined;
+        /** Maximum time in milliseconds to retain an event while exact entity identity resolution is temporarily unavailable (default 30000). After this bound the event is written in legacy form. */
+        identityResolutionRetryMaxAgeMs?: number | undefined;
         /** Enable ingest/buffer trace logs. Equivalent to setting UNS_ARCHIVER_TRACE=1 or UNS_ARCHIVER_TRACE_INGEST=1. */
         traceIngest?: boolean | undefined;
     } | undefined;
