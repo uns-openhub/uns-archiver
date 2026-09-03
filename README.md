@@ -74,6 +74,15 @@ the live queue for MQTT traffic; they are not kept in an unbounded in-memory
 promise backlog. `archiver.ingestConcurrency` defaults to `1`; only raise it
 after measuring QuestDB and process memory under load.
 
+The active-topic registry is a separate history-eligibility gate. Packets for a
+topic that is not yet active are held in memory only for
+`archiver.inactiveBufferMaxAgeMs` and up to `archiver.inactiveBufferMax` events
+to cover a short metadata race. If the topic is still inactive, the packet is
+discarded rather than added to `event_storage`; a broad MQTT filter must not
+turn unrelated infrastructure telemetry into an endless durable backlog.
+Legacy spool entries marked `inactive_expired` or `inactive_overflow` are
+acknowledged while replaying for the same reason.
+
 `archiver.storedReplayBatchSize` defaults to `64`, and
 `archiver.storedReplayIntervalMs` defaults to five seconds. A pass processes
 up to that many files concurrently so their

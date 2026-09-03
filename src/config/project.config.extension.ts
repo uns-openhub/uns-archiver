@@ -23,7 +23,7 @@ export const projectExtrasSchema = z.object({
         .positive()
         .optional()
         .describe(
-          "Max number of events kept in-memory while waiting for the controller/GraphQL active-topics registry (default 2000). Overflow spills to ./event_storage.",
+          "Max number of events kept in-memory while waiting for the controller/GraphQL active-topics registry (default 2000). Overflow is discarded because inactive topics are not eligible for history.",
         ),
       inactiveBufferMaxAgeMs: z
         .number()
@@ -31,7 +31,7 @@ export const projectExtrasSchema = z.object({
         .positive()
         .optional()
         .describe(
-          "Max age (ms) for buffered inactive-topic events before spilling to ./event_storage (default 300000 = 5min).",
+          "Max age (ms) for buffered inactive-topic events before discarding them (default 300000 = 5min).",
         ),
       ingestQueueMaxEvents: z
         .number()

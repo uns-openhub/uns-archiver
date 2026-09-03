@@ -37,6 +37,10 @@ import {
   hasStoredReplayLiveHeadroom,
   resolveStoredReplayLimits,
 } from "./stored-replay-limits.js";
+import {
+  discardExpiredOrOverflowInactiveEvents,
+  isInactiveBufferSpill,
+} from "./inactive-topic-buffer.js";
 let pkgInfo: { name: string; version: string } | null = null;
 
 
@@ -391,13 +395,15 @@ const bufferInactiveEvent = async (
   inactiveBufferByTopic.set(normalizedTopic, arr);
   inactiveBufferEventIds.add(eventId);
 
-  // Cleanup expired / over-capacity events (spill to local storage to avoid losing data).
-  const spill = async (ev: BufferedMqttEvent, reason: string) => {
+  // This buffer bridges a short UNS metadata race. Packets that remain outside
+  // the active registry must not become a durable backlog merely because a
+  // broad MQTT filter also sees infrastructure telemetry.
+  const discard = (ev: BufferedMqttEvent) => {
     inactiveBufferEventIds.delete(ev.eventId);
-    try {
-      await saveEventToFile({ ...ev.mqttEvent, bufferReason: reason, bufferedAt: new Date(ev.receivedAt).toISOString() }, ev.eventId);
-    } catch {
-      // best-effort
+    if (traceIngestEnabled) {
+      logger.info(
+        `[trace][buffer] discarded inactive eventId=${ev.eventId} topic='${String(ev.mqttEvent.topic ?? "")}'`,
+      );
     }
   };
 
@@ -413,35 +419,13 @@ const bufferInactiveEvent = async (
     );
   }
 
-  // Expire per-topic oldest first
-  while (arr.length > 0 && now - arr[0]!.receivedAt > inactiveBufferMaxAgeMs) {
-    const ev = arr.shift()!;
-    await spill(ev, "inactive_expired");
-  }
-
-  // Global cap: remove oldest across topics (simple scan; bounded by cap)
-  while (totalCount() > inactiveBufferMaxEvents) {
-    let oldestTopic: string | null = null;
-    let oldestIndex = 0;
-    let oldestAt = Infinity;
-    for (const [t, list] of inactiveBufferByTopic.entries()) {
-      if (list.length === 0) continue;
-      const at = list[0]!.receivedAt;
-      if (at < oldestAt) {
-        oldestAt = at;
-        oldestTopic = t;
-        oldestIndex = 0;
-      }
-    }
-    if (!oldestTopic) break;
-    const list = inactiveBufferByTopic.get(oldestTopic);
-    if (!list || list.length === 0) {
-      inactiveBufferByTopic.delete(oldestTopic);
-      continue;
-    }
-    const ev = list.splice(oldestIndex, 1)[0]!;
-    if (list.length === 0) inactiveBufferByTopic.delete(oldestTopic);
-    await spill(ev, "inactive_overflow");
+  for (const ev of discardExpiredOrOverflowInactiveEvents(
+    inactiveBufferByTopic,
+    inactiveBufferMaxEvents,
+    inactiveBufferMaxAgeMs,
+    now,
+  )) {
+    discard(ev);
   }
 };
 
@@ -1121,6 +1105,12 @@ async function processEvent(
       }
 
       if (fromStorage) {
+        if (isInactiveBufferSpill(mqttEvent)) {
+          // Earlier builds persisted packets after their inactive metadata
+          // grace period. If still inactive, acknowledge the legacy event.
+          inflightEventIds.delete(eventId);
+          return true;
+        }
         // Keep the file in storage for later retry after topics refresh.
         inflightEventIds.delete(eventId);
         return false;
