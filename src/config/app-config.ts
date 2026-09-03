@@ -158,9 +158,9 @@ export interface ProjectAppConfig {
     } | undefined;
     /** Archiver runtime settings. */
     archiver?: {
-        /** Max number of events kept in-memory while waiting for the controller/GraphQL active-topics registry (default 2000). Overflow spills to ./event_storage. */
+        /** Max number of events kept in-memory while waiting for the controller/GraphQL active-topics registry (default 2000). Overflow is discarded because inactive topics are not eligible for history. */
         inactiveBufferMax?: number | undefined;
-        /** Max age (ms) for buffered inactive-topic events before spilling to ./event_storage (default 300000 = 5min). */
+        /** Max age (ms) for buffered inactive-topic events before discarding them (default 300000 = 5min). */
         inactiveBufferMaxAgeMs?: number | undefined;
         /** Maximum active MQTT events retained in memory while QuestDB is being written (default 256). Excess events are immediately persisted to ./event_storage. */
         ingestQueueMaxEvents?: number | undefined;

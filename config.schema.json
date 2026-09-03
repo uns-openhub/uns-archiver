@@ -1975,13 +1975,13 @@
           "type": "object",
           "properties": {
             "inactiveBufferMax": {
-              "description": "Max number of events kept in-memory while waiting for the controller/GraphQL active-topics registry (default 2000). Overflow spills to ./event_storage.",
+              "description": "Max number of events kept in-memory while waiting for the controller/GraphQL active-topics registry (default 2000). Overflow is discarded because inactive topics are not eligible for history.",
               "type": "integer",
               "exclusiveMinimum": 0,
               "maximum": 9007199254740991
             },
             "inactiveBufferMaxAgeMs": {
-              "description": "Max age (ms) for buffered inactive-topic events before spilling to ./event_storage (default 300000 = 5min).",
+              "description": "Max age (ms) for buffered inactive-topic events before discarding them (default 300000 = 5min).",
               "type": "integer",
               "exclusiveMinimum": 0,
               "maximum": 9007199254740991
