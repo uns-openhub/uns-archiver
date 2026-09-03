@@ -213,6 +213,7 @@ export class ArchiverEntityBindingClient {
     const instant = new Date(asOf).getTime();
     const keys = this.cacheKeysByTopic.get(topic);
     if (!keys) return undefined;
+    let freshest: { key: string; entry: CacheEntry } | undefined;
     for (const key of keys) {
       const entry = this.cache.get(key);
       const resolution = entry?.resolution;
@@ -223,8 +224,10 @@ export class ArchiverEntityBindingClient {
         || new Date(resolution.validFrom).getTime() > instant
         || (resolution.validTo !== null && new Date(resolution.validTo).getTime() <= instant)
       ) continue;
-      return { key, entry };
+      if (!freshest || entry.fetchedAt > freshest.entry.fetchedAt) {
+        freshest = { key, entry };
+      }
     }
-    return undefined;
+    return freshest;
   }
 }

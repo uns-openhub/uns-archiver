@@ -57,6 +57,31 @@ test("resolves exact event-time binding and caches revision evidence", async () 
   assert.equal(requests.length, 2);
 });
 
+test("reuses the freshest interval entry after an older cache entry expires", async () => {
+  let now = 1_000;
+  let calls = 0;
+  const client = new ArchiverEntityBindingClient({
+    graphqlUrl: "http://controller/graphql",
+    tokenProvider: { getAccessToken: async () => "service-token" },
+    fetchImpl: async () => {
+      calls += 1;
+      return jsonResponse({ data: { ResolveEntityObservationBindings: [resolution(String(calls))] } });
+    },
+    now: () => now,
+    cacheTtlMs: 1_000,
+  });
+
+  await client.resolveTopic(topic, "2026-09-03T10:00:00Z");
+  now = 2_500;
+  await client.resolveTopic(topic, "2026-09-03T10:10:00Z");
+  now = 2_600;
+  const reused = await client.resolveTopic(topic, "2026-09-03T10:20:00Z");
+
+  assert.equal(reused.source, "cache");
+  assert.equal(reused.resolution?.revision, "2");
+  assert.equal(calls, 2);
+});
+
 test("keeps event-time cache keys separate and evicts least-recently-used entries", async () => {
   let calls = 0;
   const client = new ArchiverEntityBindingClient({
