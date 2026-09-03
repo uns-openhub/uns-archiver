@@ -18,17 +18,17 @@
   "archiver": {
     "inactiveBufferMax": 2000,
     "inactiveBufferMaxAgeMs": 300000,
-    "ingestQueueMaxEvents": 256,
-    "ingestQueueMaxBytes": 16777216,
-    "ingestConcurrency": 1,
-    "storedReplayBatchSize": 64,
+    "ingestQueueMaxEvents": 1024,
+    "ingestQueueMaxBytes": 33554432,
+    "ingestConcurrency": 64,
+    "storedReplayBatchSize": 8,
     "storedReplayIntervalMs": 5000,
     "traceIngest": false
   },
   "questdb": {
     "configurationString": "http::addr=questdb:9000;auto_flush=off",
     "batch": {
-      "flushIntervalMs": 1000,
+      "flushIntervalMs": 250,
       "maxRows": 256,
       "maxPendingRows": 2048
     },

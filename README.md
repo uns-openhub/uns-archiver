@@ -26,11 +26,11 @@ QuestDB table mappings back to the UNS infrastructure.
 The service ships three topology-specific profiles. They contain no deployment
 credentials or customer endpoints.
 
-| Profile | Use it when | MQTT and QuestDB | Service credential |
-| --- | --- | --- | --- |
-| `config-development-host.json` | Running the service directly with `pnpm run dev` on the host | `localhost` | `UNS_SERVICE_TOKEN` from untracked `.env` |
-| `config-development-podman.json` | Deploying through a local Podman OpenHub controller | Compose DNS: `mosquitto`, `questdb` | Controller-managed `UNS_SERVICE_TOKEN_FILE` |
-| `config-production.json` | Creating a production controller instance | Compose/Runtime DNS: `mosquitto`, `questdb` | Controller-managed `/run` token file |
+| Profile                          | Use it when                                                  | MQTT and QuestDB                            | Service credential                          |
+| -------------------------------- | ------------------------------------------------------------ | ------------------------------------------- | ------------------------------------------- |
+| `config-development-host.json`   | Running the service directly with `pnpm run dev` on the host | `localhost`                                 | `UNS_SERVICE_TOKEN` from untracked `.env`   |
+| `config-development-podman.json` | Deploying through a local Podman OpenHub controller          | Compose DNS: `mosquitto`, `questdb`         | Controller-managed `UNS_SERVICE_TOKEN_FILE` |
+| `config-production.json`         | Creating a production controller instance                    | Compose/Runtime DNS: `mosquitto`, `questdb` | Controller-managed `/run` token file        |
 
 The Podman and production profiles intentionally share their internal network
 names: in both cases the RTT process runs alongside the controller. The
@@ -93,6 +93,13 @@ batch in memory. This keeps startup, status counting, and replay bounded even
 when an outage has left millions of event files in the durable spool. Lowering
 the replay interval drains such a backlog faster; raise the rate gradually and
 watch QuestDB dependency health and live ingest headroom.
+
+The `config-development-podman.json` profile is tuned for the bundled local
+Podman runtime: it uses a 1024-event/32 MiB live queue, 64 concurrent ingest
+operations, and a 250 ms QuestDB batch flush. Durable replay is deliberately
+kept at 8 events every 5 seconds so recovery traffic does not overwhelm a local
+QuestDB instance while live MQTT traffic is active. These are profile values,
+not global defaults for host development or production deployments.
 
 ## Configuration
 
