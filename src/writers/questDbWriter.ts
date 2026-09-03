@@ -62,6 +62,15 @@ export type QuestDbDependencyHealth = {
   message?: string;
 };
 
+export type QuestDbEntityIdentityEvidence = {
+  stableEntityId: string;
+  entityTypeKey: string;
+  bindingRevision: string;
+  bindingDigest: string;
+  resolution: "resolved";
+  timeBasis: string;
+};
+
 export class QuestDBWriter {
   private readonly questDbExecConfig: QuestDbExecConfig | null;
   private readonly clearedWindows = new Set<string>();
@@ -180,6 +189,7 @@ export class QuestDBWriter {
     inputTopic: any,
     topicMeta?: UnsTopicMetadata,
     ingestMode?: IngestMode,
+    entityIdentity?: QuestDbEntityIdentityEvidence,
   ) {
     const parseToMs = (field: string, value: unknown): number | null => {
       if (value === null || value === undefined) return null;
@@ -224,6 +234,21 @@ export class QuestDBWriter {
       if (asset) next = next.symbol("asset", asset);
       if (objectType) next = next.symbol("objectType", objectType);
       if (objectId) next = next.symbol("objectId", objectId);
+      if (entityIdentity) {
+        next = next.symbol("stableEntityId", entityIdentity.stableEntityId);
+        next = next.symbol("entityTypeKey", entityIdentity.entityTypeKey);
+        next = next.symbol("identityResolution", entityIdentity.resolution);
+        next = next.symbol("identityTimeBasis", entityIdentity.timeBasis);
+        next = next.symbol("identityBindingRevision", entityIdentity.bindingRevision);
+      }
+      return next;
+    };
+
+    const addIdentityEvidenceColumns = (builder: any) => {
+      let next = builder.stringColumn("fullTopic", fullTopic);
+      if (entityIdentity) {
+        next = next.stringColumn("identityBindingDigest", entityIdentity.bindingDigest);
+      }
       return next;
     };
 
@@ -265,6 +290,7 @@ export class QuestDBWriter {
         } else {
           builder = builder.symbol("valueType", typeof dataValue);
         }
+        builder = addIdentityEvidenceColumns(builder);
         builder = builder.booleanColumn("deleted", deleted);
         builder = builder.timestampColumn("lastSeen", lastSeen, "ms");
         if (deletedAt != null) {
@@ -354,6 +380,7 @@ export class QuestDBWriter {
           builder = builder.symbol(name, String(column.value));
         }
 
+        builder = addIdentityEvidenceColumns(builder);
         builder = builder.booleanColumn("deleted", deleted);
         builder = builder.timestampColumn("lastSeen", lastSeen, "ms");
         if (deletedAt != null) {
