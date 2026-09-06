@@ -23,6 +23,7 @@ const profiles = [
     env: "dev",
     mqttHost: "localhost",
     questdbHost: "localhost:9000",
+    dataStorageTopic: "forge-group/#",
     replayBatchSize: 64,
   },
   {
@@ -30,6 +31,7 @@ const profiles = [
     env: "dev",
     mqttHost: "mosquitto",
     questdbHost: "questdb:9000",
+    dataStorageTopic: "forge-group/#",
     replayBatchSize: 8,
   },
   {
@@ -37,6 +39,7 @@ const profiles = [
     env: "prod",
     mqttHost: "mosquitto",
     questdbHost: "questdb:9000",
+    dataStorageTopic: "forge-group/#",
     replayBatchSize: 64,
   },
 ] as const;
@@ -58,6 +61,7 @@ test("configuration profiles are schema-valid and topology-specific", () => {
       config.questdb.configurationString,
       new RegExp(profile.questdbHost.replace(/[.:]/g, "\\$&")),
     );
+    assert.equal(config.questdb.dataStorage[0]?.topic, profile.dataStorageTopic);
     assert.equal("input" in config, false);
     assert.equal("output" in config, false);
     assert.equal("email" in config.uns, false);
@@ -67,6 +71,8 @@ test("configuration profiles are schema-valid and topology-specific", () => {
       profile.replayBatchSize,
     );
     assert.equal(config.archiver.storedReplayIntervalMs, 5000);
+    assert.equal(config.archiver.identityEnrichmentEnabled, false);
+    assert.equal(config.archiver.identityResolutionRetryMaxAgeMs, 30000);
   }
 });
 
@@ -86,6 +92,8 @@ test("the Podman profile keeps live ingest ahead of the local MQTT rate", () => 
     ingestConcurrency: 64,
     storedReplayBatchSize: 8,
     storedReplayIntervalMs: 5000,
+    identityEnrichmentEnabled: false,
+    identityResolutionRetryMaxAgeMs: 30000,
     traceIngest: false,
   });
   assert.deepEqual(config.questdb.batch, {

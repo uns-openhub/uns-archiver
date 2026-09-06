@@ -249,6 +249,7 @@ export class StoredEventReplay {
     }
 
     if (!processed) {
+      await this.persistUpdatedEvent(lockedEvent, event);
       await this.requeueLocked(lockedEvent);
       return;
     }
@@ -262,6 +263,25 @@ export class StoredEventReplay {
       this.failed += 1;
       this.recordError("stored-replay-delete-failed");
       await this.requeueLocked(lockedEvent);
+    }
+  }
+
+  private async persistUpdatedEvent(
+    lockedEvent: LockedStoredEvent,
+    event: unknown,
+  ): Promise<void> {
+    const temporaryPath = `${lockedEvent.processingFilePath}.updated`;
+    try {
+      await fs.writeFile(temporaryPath, JSON.stringify(event), "utf8");
+      await fs.rename(temporaryPath, lockedEvent.processingFilePath);
+    } catch {
+      this.failed += 1;
+      this.recordError("stored-replay-update-failed");
+      try {
+        await fs.unlink(temporaryPath);
+      } catch {
+        // Best effort cleanup; the original locked event remains recoverable.
+      }
     }
   }
 

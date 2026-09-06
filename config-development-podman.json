@@ -23,6 +23,8 @@
     "ingestConcurrency": 64,
     "storedReplayBatchSize": 8,
     "storedReplayIntervalMs": 5000,
+    "identityEnrichmentEnabled": false,
+    "identityResolutionRetryMaxAgeMs": 30000,
     "traceIngest": false
   },
   "questdb": {
@@ -35,7 +37,7 @@
     "dataStorage": [
       {
         "tablePrefix": "uns_enterprise",
-        "topic": "enterprise/#",
+        "topic": "forge-group/#",
         "ingestMode": "dedup"
       }
     ]

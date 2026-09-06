@@ -116,6 +116,25 @@ test("keeps durable work queued when live headroom is exhausted", async (t) => {
   assert.equal(await replay.countQueued(), 0);
 });
 
+test("persists event mutations before requeueing a retry", async (t) => {
+  const directories = await createWorkspace(t);
+  const replay = createReplay(directories, {
+    processEvent: async (event) => {
+      (event as Record<string, unknown>).identity = { status: "retry" };
+      return false;
+    },
+  });
+  await writeEvent(directories.events, "identity", { id: "identity" });
+
+  await replay.run();
+
+  const stored = JSON.parse(
+    await fs.readFile(path.join(directories.events, "identity.event"), "utf8"),
+  ) as Record<string, unknown>;
+  assert.deepEqual(stored.identity, { status: "retry" });
+  assert.equal(replay.diagnostics(1).requeued, 1);
+});
+
 test("bounds replay batch size and runs only the configured concurrent writes", async (t) => {
   const directories = await createWorkspace(t);
   const gate = deferred();

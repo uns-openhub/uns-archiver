@@ -2016,6 +2016,16 @@
               "minimum": 250,
               "maximum": 9007199254740991
             },
+            "identityEnrichmentEnabled": {
+              "description": "Enrich QuestDB rows with controller-issued stable entity identity evidence. Disabled by default for a backward-compatible staged rollout.",
+              "type": "boolean"
+            },
+            "identityResolutionRetryMaxAgeMs": {
+              "description": "Maximum time in milliseconds to retain an event while exact entity identity resolution is temporarily unavailable (default 30000). After this bound the event is written in legacy form.",
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
             "traceIngest": {
               "description": "Enable ingest/buffer trace logs. Equivalent to setting UNS_ARCHIVER_TRACE=1 or UNS_ARCHIVER_TRACE_INGEST=1.",
               "type": "boolean"

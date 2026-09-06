@@ -88,6 +88,16 @@ test("writes canonical object columns while preserving symbol and UoM behavior",
     } as never,
     "uns_measurements",
     "plant/line-1/equipment/main/measurements",
+    undefined,
+    undefined,
+    {
+      stableEntityId: "11111111-1111-4111-8111-111111111111",
+      entityTypeKey: "openhub.asset",
+      bindingRevision: "8",
+      bindingDigest: `sha256:${"1".repeat(64)}`,
+      resolution: "resolved",
+      timeBasis: "source-event-time",
+    },
   );
 
   const stateSymbolIndex = sender.calls.findIndex(
@@ -105,6 +115,14 @@ test("writes canonical object columns while preserving symbol and UoM behavior",
         method === "floatColumn" && name === "power" && value === 42.1,
     ),
   );
+  assert.ok(sender.calls.some(([method, name, value]) =>
+    method === "symbol" && name === "stableEntityId" && value === "11111111-1111-4111-8111-111111111111"));
+  assert.ok(sender.calls.some(([method, name, value]) =>
+    method === "symbol" && name === "identityBindingRevision" && value === "8"));
+  assert.ok(sender.calls.some(([method, name, value]) =>
+    method === "stringColumn" && name === "identityBindingDigest" && value === `sha256:${"1".repeat(64)}`));
+  assert.ok(sender.calls.some(([method, name, value]) =>
+    method === "stringColumn" && name === "fullTopic" && value === "plant/line-1/equipment/main/measurements"));
   assert.ok(
     sender.calls.some(
       ([method, name, value]) =>
