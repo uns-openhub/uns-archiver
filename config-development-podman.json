@@ -37,7 +37,7 @@
     "dataStorage": [
       {
         "tablePrefix": "uns_enterprise",
-        "topic": "enterprise/#",
+        "topic": "forge-group/#",
         "ingestMode": "dedup"
       }
     ]

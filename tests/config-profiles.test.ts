@@ -23,6 +23,7 @@ const profiles = [
     env: "dev",
     mqttHost: "localhost",
     questdbHost: "localhost:9000",
+    dataStorageTopic: "forge-group/#",
     replayBatchSize: 64,
   },
   {
@@ -30,6 +31,7 @@ const profiles = [
     env: "dev",
     mqttHost: "mosquitto",
     questdbHost: "questdb:9000",
+    dataStorageTopic: "forge-group/#",
     replayBatchSize: 8,
   },
   {
@@ -37,6 +39,7 @@ const profiles = [
     env: "prod",
     mqttHost: "mosquitto",
     questdbHost: "questdb:9000",
+    dataStorageTopic: "forge-group/#",
     replayBatchSize: 64,
   },
 ] as const;
@@ -58,6 +61,7 @@ test("configuration profiles are schema-valid and topology-specific", () => {
       config.questdb.configurationString,
       new RegExp(profile.questdbHost.replace(/[.:]/g, "\\$&")),
     );
+    assert.equal(config.questdb.dataStorage[0]?.topic, profile.dataStorageTopic);
     assert.equal("input" in config, false);
     assert.equal("output" in config, false);
     assert.equal("email" in config.uns, false);
