@@ -34,7 +34,7 @@
   },
   "dependencies": {
     "@questdb/nodejs-client": "^4.2.0",
-    "@uns-kit/api": "^3.0.16",
+    "@uns-kit/api": "^3.0.17",
     "@uns-kit/core": "^3.0.16",
     "dotenv": "^17.4.2",
     "zod": "^4.4.3"

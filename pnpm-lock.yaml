@@ -23,8 +23,8 @@ importers:
         specifier: ^4.2.0
         version: 4.2.0
       '@uns-kit/api':
-        specifier: ^3.0.16
-        version: 3.0.16(typescript@6.0.3)
+        specifier: ^3.0.17
+        version: 3.0.17(typescript@6.0.3)
       '@uns-kit/core':
         specifier: ^3.0.16
         version: 3.0.16(typescript@6.0.3)
@@ -1084,11 +1084,14 @@ packages:
   '@types/ws@8.18.1':
     resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
 
-  '@uns-kit/api@3.0.16':
-    resolution: {integrity: sha512-zDcQ5pnEuD/hSsMjeya8cXQFB/R5efUqVSZHaUNtHV9p1q50i666jqwoUxYtUvxWmokdNYvyzzAFuKLzUsJzhg==}
+  '@uns-kit/api@3.0.17':
+    resolution: {integrity: sha512-KexKbBi2bZ9irZ0xWSRVUQdArt6FoJ+AKZwHhgi33u0O/8N6dh/QS15OqJQjJ/GwcknkbS/6J+FMQSDqGnNx5g==}
 
   '@uns-kit/core@3.0.16':
     resolution: {integrity: sha512-Mo8PSp79KgUCSSHM3JtDj682vYmFmR1p+RFMb43w7l73WwEHbnbvZa6nwkMZ5yG1tD2PG/lX9NEWWVm3ksYs7g==}
+
+  '@uns-kit/core@3.0.17':
+    resolution: {integrity: sha512-ZE00QPOrw9Kes1Ts1JmkMygRuowkkYwUV//hEGH6UylN866IqVKVTCA2zITiN9LEsnzysjbGpJT7zg+OI8/91w==}
 
   '@whatwg-node/disposablestack@0.0.6':
     resolution: {integrity: sha512-LOtTn+JgJvX8WfBVJtF08TGrdjuFzGJc4mkP8EdDI8ADbvO7kiexYep1o8dwnt0okb0jYclCDXF13xU7Ge4zSw==}
@@ -1153,6 +1156,10 @@ packages:
 
   azure-devops-node-api@15.1.2:
     resolution: {integrity: sha512-PfJTGK8oaBB3e0hilF5QE5BT0axpxssZlc0pRq3Rb0XsKr4qk1Cma+jBRRz0hE+zuUsu/7cz0WTCVo+kcVvOjw==}
+    engines: {node: '>= 16.0.0'}
+
+  azure-devops-node-api@15.1.3:
+    resolution: {integrity: sha512-YMgxCjQDqBr//vGy658tXTrXAgS2BzIChJ2Mzrq+fzLK+dh42fODWO/kEQMmtp+Rw0jNgEoUA72cHYVBrxrjRw==}
     engines: {node: '>= 16.0.0'}
 
   balanced-match@4.0.4:
@@ -1300,8 +1307,8 @@ packages:
     resolution: {integrity: sha512-nTjqfcBFEipKdXCv4YDQWCfmcLZKm81ldF0pAopTvyrFGVbcR6P/VAAd5G7N+0tTr8QqiU0tFadD6FK4NtJwOA==}
     engines: {node: '>= 0.6'}
 
-  content-type@2.0.0:
-    resolution: {integrity: sha512-j/O/d7GcZCyNl7/hwZAb606rzqkyvaDctLmckbxLzHvFBzTJHuGEdodATcP3yIRoDrLHkIATJuvzbFlp/ki2cQ==}
+  content-type@2.1.0:
+    resolution: {integrity: sha512-mj7UPXE0jaqaOsukNZRUEfEi2AcL7C/vwmwcHV0O97eO1E1pxBZuyjlZrx5seTaNBg1U6+o35wpa35Qfcc+7ag==}
     engines: {node: '>=18'}
 
   convert-source-map@2.0.0:
@@ -1635,11 +1642,11 @@ packages:
     resolution: {integrity: sha512-4FbRdAX+bSdmo4AUFuS0WNiPz8NgFt+r8ThgNWmlrjQjt1Q7ZR9+zTlce2859x4KSXrwIsaeTqDoKQmtP8pLmQ==}
     engines: {node: '>= 0.8'}
 
-  hyparquet-writer@0.16.6:
-    resolution: {integrity: sha512-KK3FhIf/yPhDi63rAEV6Di9tLZXDGYqXcOMVS2Ssm5zerEkrfc71REfGCFcEKtiiATGzd9kq5uWcy8JeCapQVQ==}
+  hyparquet-writer@0.16.9:
+    resolution: {integrity: sha512-VZvH4Vq9lQwZa/+1y4YrEwF9+FAe5pED+mVN4AHflCoFk5LG2RemMHW9iwVlVqug7fO3ATwEMSG68cr3uZAkjQ==}
 
-  hyparquet@1.28.1:
-    resolution: {integrity: sha512-04PlyhYZpNDVaOjJNX4SP00beWf9Y9vXEOEQXSMFqVQNzxGxTmsJOQgBjar8VzLpT6E2kxNiWKL539e1dHcOVA==}
+  hyparquet@1.29.2:
+    resolution: {integrity: sha512-2LxinZ8X0JqToST+9OXcy9t3t5Q7ZneMTkSqUx/36Hv18pCTk/N71IWZc7APTSNG1Me39l/jjEvzZSZ0R+Knbw==}
 
   iconv-lite@0.7.3:
     resolution: {integrity: sha512-IKXpvIzjnC9XTAUbVBcMfGS0EPaIXtW6v+zr+RRp+hqULEpo0owZax6wyRwPOJbWbzjYspQwusTsfVr0ifh4uQ==}
@@ -1935,17 +1942,17 @@ packages:
   ms@2.1.3:
     resolution: {integrity: sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==}
 
-  multer@2.2.0:
-    resolution: {integrity: sha512-6rdyFg2kLrMh9Jee7/BMPuV9lEAd7lLW2YUpF9/YxR7njyoUwwQ0ZPh3TaIY50Sw6vlyD2HW3wGOkTS4P79xrQ==}
+  multer@2.3.0:
+    resolution: {integrity: sha512-cjNbm3sttszgZeGfJR124D+jFEfkXCVAsoPBmFn9X7UxmDSFHWqE2CoEj0vrmSpuAFnqWR1Szcm9QTsiHr60Xw==}
     engines: {node: '>= 10.16.0'}
 
   mute-stream@3.0.0:
     resolution: {integrity: sha512-dkEJPVvun4FryqBmZ5KhDo0K9iDXAwn08tMLDinNdRBNPcYEDiWYysLcc6k3mjTMlbP9KyylvRpd4wFtwrT9rw==}
     engines: {node: ^20.17.0 || >=22.9.0}
 
-  negotiator@1.0.0:
-    resolution: {integrity: sha512-8Ofs/AUQh8MaEcrlq5xOX0CQ9ypTF5dl78mjlMNfOK08fzpgTHQRQPBxcPlEtIw0yRpws+Zo/3r+5WRby7u3Gg==}
-    engines: {node: '>= 0.6'}
+  negotiator@1.1.0:
+    resolution: {integrity: sha512-NMPBRMJgiQHjbd8phG3Vebdx4kZ1H121rbl5IkMqeOsahptB9BKo/d7oJ3zTXqTgagn2bWlNSXkh0QUGM31RYg==}
+    engines: {node: '>=18'}
 
   node-domexception@1.0.0:
     resolution: {integrity: sha512-/jKZoMpw0F8GRwl4/eLROPA3cfcXtLApP0QzLmUT/HuPCZWyB7IY9ZrMeKw2O/nFIqPQB3PVM9aYm0F312AXDQ==}
@@ -2059,8 +2066,8 @@ packages:
     resolution: {integrity: sha512-llQsMLSUDUPT44jdrU/O37qlnifitDP+ZwrmmZcoSKyLKvtZxpyV0n2/bD/N4tBAAZ/gJEdZU7KMraoK1+XYAg==}
     engines: {node: '>= 0.10'}
 
-  qs@6.15.3:
-    resolution: {integrity: sha512-O9gl3zCl5h5blw1KGUzQKhA5oUXSl8rwUIM5o0S3nCXMliSvy5Dzx7/DJcI+SwgICv+IneSZwhBh1oSyEHA71A==}
+  qs@6.16.0:
+    resolution: {integrity: sha512-h6fhOIaRrID2CbEY2fqs+7t+UXZo+MLAnU5gRIq85uFtdiUPCdsApMlHhXogKVM4HM2DVbIjGNTTYH2OcmP1vA==}
     engines: {node: '>=0.6'}
 
   queue-microtask@1.2.3:
@@ -3256,10 +3263,10 @@ snapshots:
       '@graphql-tools/utils': 11.2.2(graphql@17.0.2)
       '@whatwg-node/disposablestack': 0.0.6
       graphql: 17.0.2
-      graphql-ws: 6.1.1(graphql@17.0.2)(ws@8.21.1)
-      isows: 1.0.7(ws@8.21.1)
+      graphql-ws: 6.1.1(graphql@17.0.2)(ws@8.21.3)
+      isows: 1.0.7(ws@8.21.3)
       tslib: 2.8.1
-      ws: 8.21.1
+      ws: 8.21.3
     transitivePeerDependencies:
       - '@fastify/websocket'
       - bufferutil
@@ -3286,9 +3293,9 @@ snapshots:
       '@graphql-tools/utils': 11.2.2(graphql@17.0.2)
       '@types/ws': 8.18.1
       graphql: 17.0.2
-      isomorphic-ws: 5.0.0(ws@8.21.1)
+      isomorphic-ws: 5.0.0(ws@8.21.3)
       tslib: 2.8.1
-      ws: 8.21.1
+      ws: 8.21.3
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
@@ -3847,14 +3854,14 @@ snapshots:
     dependencies:
       '@types/node': 26.2.0
 
-  '@uns-kit/api@3.0.16(typescript@6.0.3)':
+  '@uns-kit/api@3.0.17(typescript@6.0.3)':
     dependencies:
-      '@uns-kit/core': 3.0.16(typescript@6.0.3)
+      '@uns-kit/core': 3.0.17(typescript@6.0.3)
       cookie-parser: 1.4.7
       express: 5.2.1
-      hyparquet-writer: 0.16.6
+      hyparquet-writer: 0.16.9
       jsonwebtoken: 9.0.3
-      multer: 2.2.0
+      multer: 2.3.0
       uuid: 11.1.1
     transitivePeerDependencies:
       - bufferutil
@@ -3868,6 +3875,32 @@ snapshots:
       '@grpc/proto-loader': 0.8.1
       '@infisical/sdk': 5.0.2
       azure-devops-node-api: 15.1.2
+      chalk: 5.6.2
+      fs-extra: 11.4.0
+      get-port: 7.2.0
+      jsonwebtoken: 9.0.3
+      mqtt: 5.15.2
+      pkg-dir: 9.0.0
+      prettier: 3.9.6
+      simple-git: 3.36.0
+      tsx: 4.23.12
+      winston: 3.19.0
+      winston-gelf: 1.7.0
+      ws: 8.21.3
+      zod: 4.4.3
+      zod-to-ts: 2.1.0(typescript@6.0.3)(zod@4.4.3)
+    transitivePeerDependencies:
+      - bufferutil
+      - supports-color
+      - typescript
+      - utf-8-validate
+
+  '@uns-kit/core@3.0.17(typescript@6.0.3)':
+    dependencies:
+      '@grpc/grpc-js': 1.14.4
+      '@grpc/proto-loader': 0.8.1
+      '@infisical/sdk': 5.0.2
+      azure-devops-node-api: 15.1.3
       chalk: 5.6.2
       fs-extra: 11.4.0
       get-port: 7.2.0
@@ -3916,7 +3949,7 @@ snapshots:
   accepts@2.0.0:
     dependencies:
       mime-types: 3.0.2
-      negotiator: 1.0.0
+      negotiator: 1.1.0
 
   ansi-escapes@7.3.0:
     dependencies:
@@ -3947,6 +3980,11 @@ snapshots:
       tunnel: 0.0.6
       typed-rest-client: 2.1.0
 
+  azure-devops-node-api@15.1.3:
+    dependencies:
+      tunnel: 0.0.6
+      typed-rest-client: 2.1.0
+
   balanced-match@4.0.4: {}
 
   base64-js@1.5.1: {}
@@ -3963,12 +4001,12 @@ snapshots:
   body-parser@2.3.0:
     dependencies:
       bytes: 3.1.2
-      content-type: 2.0.0
+      content-type: 2.1.0
       debug: 4.4.3
       http-errors: 2.0.1
       iconv-lite: 0.7.3
       on-finished: 2.4.1
-      qs: 6.15.3
+      qs: 6.16.0
       raw-body: 3.0.2
       type-is: 2.1.0
     transitivePeerDependencies:
@@ -4100,7 +4138,7 @@ snapshots:
 
   content-type@1.0.5: {}
 
-  content-type@2.0.0: {}
+  content-type@2.1.0: {}
 
   convert-source-map@2.0.0: {}
 
@@ -4265,7 +4303,7 @@ snapshots:
       once: 1.4.0
       parseurl: 1.3.3
       proxy-addr: 2.0.7
-      qs: 6.15.3
+      qs: 6.16.0
       range-parser: 1.3.0
       router: 2.2.0
       send: 1.2.1
@@ -4433,11 +4471,11 @@ snapshots:
       graphql: 17.0.2
       tslib: 2.8.1
 
-  graphql-ws@6.1.1(graphql@17.0.2)(ws@8.21.1):
+  graphql-ws@6.1.1(graphql@17.0.2)(ws@8.21.3):
     dependencies:
       graphql: 17.0.2
     optionalDependencies:
-      ws: 8.21.1
+      ws: 8.21.3
 
   graphql@17.0.2: {}
 
@@ -4457,11 +4495,11 @@ snapshots:
       statuses: 2.0.2
       toidentifier: 1.0.1
 
-  hyparquet-writer@0.16.6:
+  hyparquet-writer@0.16.9:
     dependencies:
-      hyparquet: 1.28.1
+      hyparquet: 1.29.2
 
-  hyparquet@1.28.1: {}
+  hyparquet@1.29.2: {}
 
   iconv-lite@0.7.3:
     dependencies:
@@ -4531,9 +4569,13 @@ snapshots:
     dependencies:
       ws: 8.21.1
 
-  isows@1.0.7(ws@8.21.1):
+  isomorphic-ws@5.0.0(ws@8.21.3):
     dependencies:
-      ws: 8.21.1
+      ws: 8.21.3
+
+  isows@1.0.7(ws@8.21.3):
+    dependencies:
+      ws: 8.21.3
 
   jiti@2.7.0: {}
 
@@ -4734,7 +4776,7 @@ snapshots:
 
   ms@2.1.3: {}
 
-  multer@2.2.0:
+  multer@2.3.0:
     dependencies:
       append-field: 1.0.0
       busboy: 1.6.0
@@ -4743,7 +4785,9 @@ snapshots:
 
   mute-stream@3.0.0: {}
 
-  negotiator@1.0.0: {}
+  negotiator@1.1.0:
+    dependencies:
+      content-type: 2.1.0
 
   node-domexception@1.0.0: {}
 
@@ -4857,7 +4901,7 @@ snapshots:
       forwarded: 0.2.0
       ipaddr.js: 1.9.1
 
-  qs@6.15.3:
+  qs@6.16.0:
     dependencies:
       es-define-property: 1.0.1
       side-channel: 1.1.1
@@ -5109,7 +5153,7 @@ snapshots:
 
   type-is@2.1.0:
     dependencies:
-      content-type: 2.0.0
+      content-type: 2.1.0
       media-typer: 1.1.1
       mime-types: 3.0.2
 
@@ -5117,7 +5161,7 @@ snapshots:
     dependencies:
       des.js: 1.1.0
       js-md4: 0.3.2
-      qs: 6.15.3
+      qs: 6.16.0
       tunnel: 0.0.6
       underscore: 1.13.8
 
