@@ -4,6 +4,7 @@ import { AuthClient, ConfigFile, logger, ServiceTokenProvider, type AccessTokenP
 import { promises as fs } from "fs";
 import path from "path";
 import { CircuitBreaker, errorMessage, isRetryableNetworkError, withRetry } from "./resilience.js";
+import { resolveControllerEndpoints } from "./controller-endpoints.js";
 
 export interface UnsTopicMetadata {
   attribute?: string;
@@ -104,6 +105,7 @@ export class ActiveUnsTopics {
 
   static async getActiveUnsTopics(): Promise<{ topics: string[]; metaByTopic: Record<string, UnsTopicMetadata> }> {
     const config = await ConfigFile.loadConfig();
+    const controllerEndpoints = resolveControllerEndpoints(config.uns ?? {});
     const document = gql`
     query GetUnsNodes {
       GetUnsNodes {
@@ -138,7 +140,7 @@ export class ActiveUnsTopics {
         async () => {
           const headers = await buildAuthHeaders(config);
           return await GRAPHQL_CIRCUIT.execute(
-            async () => await request(config.uns.graphql, document, undefined, headers),
+            async () => await request(controllerEndpoints.graphql, document, undefined, headers),
           );
         },
         {

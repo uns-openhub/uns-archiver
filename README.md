@@ -61,6 +61,13 @@ a user password in `config.json`; use the legacy fallback only to bootstrap or r
 a development machine token. None of the committed profiles requires an email or
 password.
 
+When the controller starts an RTT instance, its injected
+`UNS_CONTROLLER_PUBLIC_BASE` overrides the static `uns.rest` and `uns.graphql`
+host for controller calls. This keeps one portable instance configuration usable
+on every cluster member and ensures service registration is sent to the controller
+that issued the instance credential. Direct repository starts continue to use the
+configured URLs.
+
 The control API must use either `uns.jwksWellKnownUrl` or `UNS_API_JWT_SECRET`.
 JWKS is preferred when the archiver runs alongside UNS OpenHub.
 
