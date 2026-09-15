@@ -56,7 +56,9 @@ import {
   discardExpiredOrOverflowInactiveEvents,
   isInactiveBufferSpill,
 } from "./inactive-topic-buffer.js";
+import { resolveControllerEndpoints } from "./controller-endpoints.js";
 let pkgInfo: { name: string; version: string } | null = null;
+let verifiedManagedIdentity: { controllerName: string; instanceId: string } | null = null;
 
 
 const EVENT_STORAGE_DIR = "./event_storage";
@@ -305,7 +307,7 @@ const refreshArchiverRuntimeSettings = () => {
 };
 
 const refreshIdentityBindingClient = () => {
-  const graphqlUrl = typeof config.uns?.graphql === "string" ? config.uns.graphql.trim() : "";
+  const graphqlUrl = resolveControllerEndpoints(config.uns ?? {}).graphql;
   const configToken = typeof config.uns?.token === "string" ? config.uns.token : undefined;
   const signature = identityEnrichmentEnabled ? `${graphqlUrl}\0${configToken ?? ""}` : "disabled";
   if (signature === identityBindingClientSignature) return;
@@ -437,6 +439,15 @@ async function publishArchiverServiceMetadata() {
     label: "UNS Archiver",
     description: "Persists UNS time-series data into QuestDB and publishes QuestDB table mappings.",
     capabilities: ["history", "questdb-mapping", "graph-data"],
+    ...(verifiedManagedIdentity
+      ? {
+          instanceId: verifiedManagedIdentity.instanceId,
+          controller: {
+            name: verifiedManagedIdentity.controllerName,
+            publicBase: process.env.UNS_CONTROLLER_PUBLIC_BASE,
+          },
+        }
+      : {}),
     extra: {
       dependencies: [health],
       questdbHealth: health,
@@ -694,7 +705,7 @@ function isControllerManagedRuntime(): boolean {
 async function registerArchiverService(): Promise<void> {
   if (!isControllerManagedRuntime()) return;
 
-  const controllerRestUrl = typeof config.uns?.rest === "string" ? config.uns.rest.trim() : "";
+  const controllerRestUrl = resolveControllerEndpoints(config.uns ?? {}).rest;
   if (!controllerRestUrl) {
     throw new Error("Controller-managed UNS Archiver requires config.uns.rest for service registration.");
   }
@@ -715,7 +726,16 @@ async function registerArchiverService(): Promise<void> {
     },
   });
   if (registration) {
+    const controllerName = process.env.UNS_CONTROLLER_NAME?.trim();
+    if (!controllerName) {
+      throw new Error("Controller-managed UNS Archiver requires UNS_CONTROLLER_NAME after registration.");
+    }
+    verifiedManagedIdentity = {
+      controllerName,
+      instanceId: registration.service.instanceId,
+    };
     logger.info(`Registered controller-managed service ${registration.service.rttNode}/${registration.service.instanceId}.`);
+    await publishArchiverServiceMetadata();
   }
 }
 
