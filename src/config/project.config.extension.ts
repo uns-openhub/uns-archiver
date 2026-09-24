@@ -39,7 +39,7 @@ export const projectExtrasSchema = z.object({
         .positive()
         .optional()
         .describe(
-          "Maximum active MQTT events retained in memory while QuestDB is being written (default 256). Excess events are immediately persisted to ./event_storage.",
+          "Maximum active MQTT events retained in memory while QuestDB is being written (default 512). Excess events are immediately persisted to ./event_storage.",
         ),
       ingestQueueMaxBytes: z
         .number()
@@ -55,7 +55,7 @@ export const projectExtrasSchema = z.object({
         .positive()
         .optional()
         .describe(
-          "Maximum concurrent QuestDB ingest operations (default 1). Increase only after measuring QuestDB throughput and memory behavior.",
+          "Maximum concurrent QuestDB ingest operations (default 512). A single worker waits for each shared batch flush and cannot keep up with sustained MQTT traffic.",
         ),
       storedReplayBatchSize: z
         .number()
@@ -63,7 +63,7 @@ export const projectExtrasSchema = z.object({
         .positive()
         .optional()
         .describe(
-          "Maximum durable event-storage files handled in one fair replay pass (default 64). Replay keeps 25% of live ingest capacity reserved for new MQTT traffic.",
+          "Maximum durable event-storage files handled in one fair replay pass (default 256). Replay keeps 25% of live ingest capacity reserved for new MQTT traffic.",
         ),
       storedReplayIntervalMs: z
         .number()
@@ -71,7 +71,7 @@ export const projectExtrasSchema = z.object({
         .min(250)
         .optional()
         .describe(
-          "Delay in milliseconds between completed durable replay passes (default 5000). Lower values drain backlogs faster but add QuestDB load.",
+          "Delay in milliseconds between completed durable replay passes (default 500). Lower values drain backlogs faster but add QuestDB load.",
         ),
       identityEnrichmentEnabled: z
         .boolean()
@@ -127,7 +127,7 @@ export const projectExtrasSchema = z.object({
           .positive()
           .optional()
           .describe(
-            "Number of ILP rows that trigger an immediate shared QuestDB flush (default 256).",
+            "Number of ILP rows that trigger an immediate shared QuestDB flush (default 512).",
           ),
         maxPendingRows: z
           .number()

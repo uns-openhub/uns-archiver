@@ -162,15 +162,15 @@ export interface ProjectAppConfig {
         inactiveBufferMax?: number | undefined;
         /** Max age (ms) for buffered inactive-topic events before discarding them (default 300000 = 5min). */
         inactiveBufferMaxAgeMs?: number | undefined;
-        /** Maximum active MQTT events retained in memory while QuestDB is being written (default 256). Excess events are immediately persisted to ./event_storage. */
+        /** Maximum active MQTT events retained in memory while QuestDB is being written (default 512). Excess events are immediately persisted to ./event_storage. */
         ingestQueueMaxEvents?: number | undefined;
         /** Maximum combined payload size in bytes retained by the active ingest queue (default 16777216 = 16 MiB). Excess events are immediately persisted to ./event_storage. */
         ingestQueueMaxBytes?: number | undefined;
-        /** Maximum concurrent QuestDB ingest operations (default 1). Increase only after measuring QuestDB throughput and memory behavior. */
+        /** Maximum concurrent QuestDB ingest operations (default 512). A single worker waits for each shared batch flush and cannot keep up with sustained MQTT traffic. */
         ingestConcurrency?: number | undefined;
-        /** Maximum durable event-storage files handled in one fair replay pass (default 64). Replay keeps 25% of live ingest capacity reserved for new MQTT traffic. */
+        /** Maximum durable event-storage files handled in one fair replay pass (default 256). Replay keeps 25% of live ingest capacity reserved for new MQTT traffic. */
         storedReplayBatchSize?: number | undefined;
-        /** Delay in milliseconds between completed durable replay passes (default 5000). Lower values drain backlogs faster but add QuestDB load. */
+        /** Delay in milliseconds between completed durable replay passes (default 500). Lower values drain backlogs faster but add QuestDB load. */
         storedReplayIntervalMs?: number | undefined;
         /** Enrich QuestDB rows with controller-issued stable entity identity evidence. Disabled by default for a backward-compatible staged rollout. */
         identityEnrichmentEnabled?: boolean | undefined;
@@ -264,7 +264,7 @@ export interface ProjectAppConfig {
         batch?: {
             /** Maximum time a completed ILP row waits before a shared QuestDB flush (default 1000ms). */
             flushIntervalMs?: number | undefined;
-            /** Number of ILP rows that trigger an immediate shared QuestDB flush (default 256). */
+            /** Number of ILP rows that trigger an immediate shared QuestDB flush (default 512). */
             maxRows?: number | undefined;
             /** Maximum accepted ILP rows across the queued and flushing shared sender batch (default 2048). A full queue rejects new writes so the archiver can persist them to event storage. */
             maxPendingRows?: number | undefined;

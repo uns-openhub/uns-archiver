@@ -60,7 +60,7 @@ type QuestDbIlpBatcherOptions = {
 
 const DEFAULT_BATCH_CONFIG: ResolvedQuestDbBatchConfig = {
   flushIntervalMs: 1000,
-  maxRows: 256,
+  maxRows: 512,
   maxPendingRows: 2048,
 };
 

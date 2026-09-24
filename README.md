@@ -74,13 +74,16 @@ JWKS is preferred when the archiver runs alongside UNS OpenHub.
 
 ### Ingest backpressure
 
-`archiver.ingestQueueMaxEvents` (default `256`) and
+`archiver.ingestQueueMaxEvents` (default `512`) and
 `archiver.ingestQueueMaxBytes` (default `16777216`, 16 MiB) bound live MQTT
 payloads while QuestDB is slow. Excess messages are synchronously persisted to
 `./event_storage` and replayed in bounded fair batches while reserving 25% of
 the live queue for MQTT traffic; they are not kept in an unbounded in-memory
-promise backlog. `archiver.ingestConcurrency` defaults to `1`; only raise it
-after measuring QuestDB and process memory under load.
+promise backlog. `archiver.ingestConcurrency` defaults to `512`. Each live
+worker waits until its QuestDB batch is flushed before taking another event,
+so a single worker with a one-second flush interval can process only about
+one event per second. Keep the queue and concurrency bounded, then measure
+QuestDB throughput and process memory when tuning for a particular workload.
 
 The active-topic registry is a separate history-eligibility gate. Packets for a
 topic that is not yet active are held in memory only for
@@ -91,8 +94,8 @@ turn unrelated infrastructure telemetry into an endless durable backlog.
 Legacy spool entries marked `inactive_expired` or `inactive_overflow` are
 acknowledged while replaying for the same reason.
 
-`archiver.storedReplayBatchSize` defaults to `64`, and
-`archiver.storedReplayIntervalMs` defaults to five seconds. A pass processes
+`archiver.storedReplayBatchSize` defaults to `256`, and
+`archiver.storedReplayIntervalMs` defaults to 500 ms. A pass processes
 up to that many files concurrently so their
 writes share the existing QuestDB ILP batcher. With single-row events and no
 live traffic joining the same sender, this is roughly one flush per 64 replayed
@@ -117,11 +120,13 @@ that recent MQTT packets may not yet be visible in history. The authenticated
 `topics` endpoint still reports an exact queued count when requested.
 
 The `config-development-podman.json` profile is tuned for the bundled local
-Podman runtime: it uses a 1024-event/32 MiB live queue, 64 concurrent ingest
-operations, and a 250 ms QuestDB batch flush. Durable replay is deliberately
-kept at 8 events every 5 seconds so recovery traffic does not overwhelm a local
-QuestDB instance while live MQTT traffic is active. These are profile values,
-not global defaults for host development or production deployments.
+Podman runtime: it uses a 1024-event/32 MiB live queue, 128 concurrent ingest
+operations, and a 250 ms QuestDB batch flush. Its replay pass handles up to
+256 durable events every 500 ms while preserving live-queue headroom. The
+host and production profiles use the measured 512-worker, 512-row batch
+combination. Existing controller instances retain their own copied config
+across releases, so review and update that instance config when upgrading
+from an older profile.
 
 ## Configuration
 

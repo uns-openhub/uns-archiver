@@ -224,11 +224,11 @@ const resolveTraceIngestFromEnv = (): boolean =>
 let traceIngestEnabled = resolveTraceIngestFromEnv();
 let inactiveBufferMaxEvents = 2000;
 let inactiveBufferMaxAgeMs = 5 * 60 * 1000;
-let ingestQueueMaxEvents = 256;
+let ingestQueueMaxEvents = 512;
 let ingestQueueMaxBytes = 16 * 1024 * 1024;
-let ingestConcurrency = 1;
-let storedReplayBatchSize = 64;
-let storedReplayIntervalMs = 5_000;
+let ingestConcurrency = 512;
+let storedReplayBatchSize = 256;
+let storedReplayIntervalMs = 500;
 let identityEnrichmentEnabled = false;
 let identityResolutionRetryMaxAgeMs = 30_000;
 let ingestQueue: BoundedIngestQueue<ArchiverMqttEvent> | undefined;
@@ -275,7 +275,7 @@ const refreshArchiverRuntimeSettings = () => {
       : Number(process.env.UNS_ARCHIVER_INACTIVE_BUFFER_MAX_AGE_MS ?? 5 * 60 * 1000);
   ingestQueueMaxEvents = resolvePositiveInteger(
     cfg?.ingestQueueMaxEvents ?? Number(process.env.UNS_ARCHIVER_INGEST_QUEUE_MAX_EVENTS),
-    256,
+    512,
   );
   ingestQueueMaxBytes = resolvePositiveInteger(
     cfg?.ingestQueueMaxBytes ?? Number(process.env.UNS_ARCHIVER_INGEST_QUEUE_MAX_BYTES),
@@ -283,17 +283,17 @@ const refreshArchiverRuntimeSettings = () => {
   );
   ingestConcurrency = resolvePositiveInteger(
     cfg?.ingestConcurrency ?? Number(process.env.UNS_ARCHIVER_INGEST_CONCURRENCY),
-    1,
+    512,
   );
   storedReplayBatchSize = resolvePositiveInteger(
     cfg?.storedReplayBatchSize ?? Number(process.env.UNS_ARCHIVER_STORED_REPLAY_BATCH_SIZE),
-    64,
+    256,
   );
   storedReplayIntervalMs = Math.max(
     250,
     resolvePositiveInteger(
       cfg?.storedReplayIntervalMs ?? Number(process.env.UNS_ARCHIVER_STORED_REPLAY_INTERVAL_MS),
-      5_000,
+      500,
     ),
   );
   identityEnrichmentEnabled = cfg?.identityEnrichmentEnabled ?? false;
