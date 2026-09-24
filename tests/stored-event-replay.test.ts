@@ -93,6 +93,28 @@ test("replays while live work remains pending when its reserved headroom is avai
   assert.notEqual(diagnostics.lastSuccessAt, null);
 });
 
+test("bounds a health backlog sample without changing the exact queue count", async (t) => {
+  const directories = await createWorkspace(t);
+  const replay = createReplay(directories, { processEvent: async () => true });
+  for (let index = 0; index < 5; index += 1) {
+    await writeEvent(directories.events, `event-${index}`);
+  }
+  await fs.writeFile(path.join(directories.events, "unfinished.tmp"), "partial");
+
+  assert.equal(await replay.countQueuedUpTo(3), 3);
+  assert.equal(await replay.countQueued(), 5);
+});
+
+test("returns an unknown sample when event storage cannot be scanned", async (t) => {
+  const directories = await createWorkspace(t);
+  const filePath = path.join(directories.events, "not-a-directory");
+  await fs.writeFile(filePath, "file");
+  const replay = createReplay({ events: filePath, failed: directories.failed }, {
+    processEvent: async () => true,
+  });
+  assert.equal(await replay.countQueuedUpTo(3), null);
+});
+
 test("keeps durable work queued when live headroom is exhausted", async (t) => {
   const directories = await createWorkspace(t);
   let hasHeadroom = false;

@@ -35,6 +35,7 @@ import { BoundedIngestQueue } from "./bounded-ingest-queue.js";
 import { drainArchiverForShutdown } from "./archiver-shutdown.js";
 import { resolveEventDeduplicationDisposition } from "./event-deduplication.js";
 import { StoredEventReplay } from "./stored-event-replay.js";
+import { assessIngestHealth, INGEST_BACKLOG_ALERT_EVENTS, type IngestHealth } from "./ingest-health.js";
 import { ArchiverEntityBindingClient } from "./entity-binding-client.js";
 import {
   DEFAULT_ENTITY_SCOPE_KEY,
@@ -168,6 +169,7 @@ let activeTopicsReady = false;
 let shuttingDown = false;
 let cleanupPromise: Promise<void> | null = null;
 let latestQuestDbHealth: QuestDbDependencyHealth | null = null;
+let latestIngestHealth: IngestHealth | null = null;
 let serviceMetadataPublisher: UnsProxyProcessWithApi | undefined;
 let activeTopics: string[] = [];
 let topicMetadata: Record<string, UnsTopicMetadata> = {};
@@ -433,6 +435,14 @@ async function refreshQuestDbHealth(): Promise<QuestDbDependencyHealth> {
 async function publishArchiverServiceMetadata() {
   if (!serviceMetadataPublisher) return;
   const health = latestQuestDbHealth ?? (await refreshQuestDbHealth());
+  const previousIngestHealthy = latestIngestHealth?.healthy;
+  const ingestHealth = assessIngestHealth(
+    await storedReplay.countQueuedUpTo(INGEST_BACKLOG_ALERT_EVENTS),
+  );
+  latestIngestHealth = ingestHealth;
+  if (previousIngestHealthy !== ingestHealth.healthy) {
+    logger.info(`Archive ingest health is ${ingestHealth.state}${ingestHealth.message ? `: ${ingestHealth.message}` : "."}`);
+  }
   await serviceMetadataPublisher.publishServiceMetadata({
     serviceId: "uns-archiver",
     kind: "core",
@@ -449,8 +459,9 @@ async function publishArchiverServiceMetadata() {
         }
       : {}),
     extra: {
-      dependencies: [health],
+      dependencies: [health, ingestHealth],
       questdbHealth: health,
+      ingestHealth,
     },
   });
 }
