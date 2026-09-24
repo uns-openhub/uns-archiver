@@ -1987,7 +1987,7 @@
               "maximum": 9007199254740991
             },
             "ingestQueueMaxEvents": {
-              "description": "Maximum active MQTT events retained in memory while QuestDB is being written (default 256). Excess events are immediately persisted to ./event_storage.",
+              "description": "Maximum active MQTT events retained in memory while QuestDB is being written (default 512). Excess events are immediately persisted to ./event_storage.",
               "type": "integer",
               "exclusiveMinimum": 0,
               "maximum": 9007199254740991
@@ -1999,19 +1999,19 @@
               "maximum": 9007199254740991
             },
             "ingestConcurrency": {
-              "description": "Maximum concurrent QuestDB ingest operations (default 1). Increase only after measuring QuestDB throughput and memory behavior.",
+              "description": "Maximum concurrent QuestDB ingest operations (default 512). A single worker waits for each shared batch flush and cannot keep up with sustained MQTT traffic.",
               "type": "integer",
               "exclusiveMinimum": 0,
               "maximum": 9007199254740991
             },
             "storedReplayBatchSize": {
-              "description": "Maximum durable event-storage files handled in one fair replay pass (default 64). Replay keeps 25% of live ingest capacity reserved for new MQTT traffic.",
+              "description": "Maximum durable event-storage files handled in one fair replay pass (default 256). Replay keeps 25% of live ingest capacity reserved for new MQTT traffic.",
               "type": "integer",
               "exclusiveMinimum": 0,
               "maximum": 9007199254740991
             },
             "storedReplayIntervalMs": {
-              "description": "Delay in milliseconds between completed durable replay passes (default 5000). Lower values drain backlogs faster but add QuestDB load.",
+              "description": "Delay in milliseconds between completed durable replay passes (default 500). Lower values drain backlogs faster but add QuestDB load.",
               "type": "integer",
               "minimum": 250,
               "maximum": 9007199254740991
@@ -2304,7 +2304,7 @@
                   "maximum": 9007199254740991
                 },
                 "maxRows": {
-                  "description": "Number of ILP rows that trigger an immediate shared QuestDB flush (default 256).",
+                  "description": "Number of ILP rows that trigger an immediate shared QuestDB flush (default 512).",
                   "type": "integer",
                   "exclusiveMinimum": 0,
                   "maximum": 9007199254740991

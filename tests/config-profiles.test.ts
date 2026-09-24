@@ -24,7 +24,7 @@ const profiles = [
     mqttHost: "localhost",
     questdbHost: "localhost:9000",
     dataStorageTopic: "forge-group/#",
-    replayBatchSize: 64,
+    replayBatchSize: 256,
   },
   {
     file: "config-development-podman.json",
@@ -32,7 +32,7 @@ const profiles = [
     mqttHost: "mosquitto",
     questdbHost: "questdb:9000",
     dataStorageTopic: "forge-group/#",
-    replayBatchSize: 8,
+    replayBatchSize: 256,
   },
   {
     file: "config-production.json",
@@ -40,7 +40,7 @@ const profiles = [
     mqttHost: "mosquitto",
     questdbHost: "questdb:9000",
     dataStorageTopic: "forge-group/#",
-    replayBatchSize: 64,
+    replayBatchSize: 256,
   },
 ] as const;
 
@@ -70,7 +70,15 @@ test("configuration profiles are schema-valid and topology-specific", () => {
       config.archiver.storedReplayBatchSize,
       profile.replayBatchSize,
     );
-    assert.equal(config.archiver.storedReplayIntervalMs, 5000);
+    assert.equal(config.archiver.storedReplayIntervalMs, 500);
+    assert.ok(
+      config.archiver.ingestConcurrency >= 64,
+      `${profile.file}: a single ingest worker waits for each shared QuestDB flush`,
+    );
+    assert.ok(
+      config.archiver.ingestQueueMaxEvents >= config.archiver.ingestConcurrency,
+      `${profile.file}: live queue must accommodate all configured ingest workers`,
+    );
     assert.equal(config.archiver.identityEnrichmentEnabled, false);
     assert.equal(config.archiver.identityResolutionRetryMaxAgeMs, 30000);
   }
@@ -89,9 +97,9 @@ test("the Podman profile keeps live ingest ahead of the local MQTT rate", () => 
     inactiveBufferMaxAgeMs: 300000,
     ingestQueueMaxEvents: 1024,
     ingestQueueMaxBytes: 33554432,
-    ingestConcurrency: 64,
-    storedReplayBatchSize: 8,
-    storedReplayIntervalMs: 5000,
+    ingestConcurrency: 128,
+    storedReplayBatchSize: 256,
+    storedReplayIntervalMs: 500,
     identityEnrichmentEnabled: false,
     identityResolutionRetryMaxAgeMs: 30000,
     traceIngest: false,
