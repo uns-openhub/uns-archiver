@@ -93,19 +93,30 @@ export class StoredEventReplay {
   }
 
   async countQueued(): Promise<number> {
+    return (await this.countQueuedUpTo(Number.POSITIVE_INFINITY)) ?? 0;
+  }
+
+  // Health polling only needs a lower bound; never scan an unbounded spool
+  // merely to decide whether history is falling behind.
+  async countQueuedUpTo(maxCount: number): Promise<number | null> {
+    if (!Number.isInteger(maxCount) && maxCount !== Number.POSITIVE_INFINITY) {
+      throw new Error("maxCount must be a positive integer");
+    }
+    if (maxCount <= 0) throw new Error("maxCount must be a positive integer");
     try {
       let count = 0;
       const directory = await fs.opendir(this.options.eventStorageDirectory);
       for await (const entry of directory) {
         if (path.extname(entry.name) === this.options.eventFileExtension) {
           count += 1;
+          if (count >= maxCount) break;
         }
       }
       return count;
     } catch (error: any) {
       if (error?.code === "ENOENT") return 0;
       this.recordError("stored-replay-count-failed");
-      return 0;
+      return null;
     }
   }
 

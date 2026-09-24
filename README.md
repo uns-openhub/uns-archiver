@@ -12,6 +12,7 @@ QuestDB table mappings back to the UNS infrastructure.
 - Derives stable QuestDB identities from UNS topic metadata.
 - Buffers early or transiently failed events on disk and retries them.
 - Publishes QuestDB mapping and dependency-health metadata.
+- Reports durable ingest backlog through controller service health, so delayed history is visible even when QuestDB itself is reachable.
 - Exposes authenticated control endpoints for status, pause, resume, and topics.
 
 ## Requirements
@@ -109,6 +110,11 @@ batch in memory. This keeps startup, status counting, and replay bounded even
 when an outage has left millions of event files in the durable spool. Lowering
 the replay interval drains such a backlog faster; raise the rate gradually and
 watch QuestDB dependency health and live ingest headroom.
+
+The controller health signal samples at most 1,000 queued event files every
+30 seconds. At that threshold it reports archive ingest as degraded and warns
+that recent MQTT packets may not yet be visible in history. The authenticated
+`topics` endpoint still reports an exact queued count when requested.
 
 The `config-development-podman.json` profile is tuned for the bundled local
 Podman runtime: it uses a 1024-event/32 MiB live queue, 64 concurrent ingest
