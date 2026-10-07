@@ -103,7 +103,7 @@ const buildAuthHeaders = async (config: { uns?: { token?: unknown } }): Promise<
 
 export class ActiveUnsTopics {
 
-  static async getActiveUnsTopics(): Promise<{ topics: string[]; metaByTopic: Record<string, UnsTopicMetadata> }> {
+  static async getActiveUnsTopics(): Promise<{ topics: string[]; metaByTopic: Record<string, UnsTopicMetadata>; source: "controller" | "cache" }> {
     const config = await ConfigFile.loadConfig();
     const controllerEndpoints = resolveControllerEndpoints(config.uns ?? {});
     const document = gql`
@@ -160,7 +160,7 @@ export class ActiveUnsTopics {
       const unsNodes: UnsNode[] | undefined = query.GetUnsNodes;
       if (!unsNodes) {
         const cached = await readCache();
-        if (cached) return cached;
+        if (cached) return { ...cached, source: "cache" };
         throw new Error("Unable to load UNS topics from GraphQL or cache.");
       }
 
@@ -185,12 +185,12 @@ export class ActiveUnsTopics {
 
       const result = { topics, metaByTopic };
       await writeCache(result);
-      return result;
+      return { ...result, source: "controller" };
     } catch (err) {
       const cached = await readCache();
       if (cached) {
         logger.warn(`Using cached active topics due to GraphQL/auth error: ${errorMessage(err)}`);
-        return cached;
+        return { ...cached, source: "cache" };
       }
       throw err;
     }
