@@ -1,10 +1,10 @@
 {
   "name": "uns-archiver",
-  "version": "5.2.19",
+  "version": "5.2.20",
   "description": "UNS OpenHub add-on that archives UNS data and table packets to QuestDB.",
   "private": true,
   "license": "MIT",
-  "author": "Aljoša Vister",
+  "author": "Aljo\u0161a Vister",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/uns-openhub/uns-archiver.git"

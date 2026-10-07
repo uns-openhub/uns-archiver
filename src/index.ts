@@ -1,3 +1,4 @@
+import { TopicObservations } from "./topic-observations.js";
 import {
   AuthClient,
   UnsProxyProcess,
@@ -161,11 +162,14 @@ function resolveIngestMode(storage: any, unsPacket: any): IngestMode {
 let config = await ConfigFile.loadConfig();
 let mqttInput: UnsMqttProxy | undefined;
 let lastMappingHash: string | null = null;
+let mappingPublishPromise: Promise<void> | undefined;
+let mappingPublishRequested = false;
 let apiProxy: any | undefined;
 let apiRestartScheduled = false;
 let ingestionPaused = false;
 let lastTopicsRefreshAt: number | null = null;
 let activeTopicsReady = false;
+let activeTopicsAuthoritative = false;
 let shuttingDown = false;
 let cleanupPromise: Promise<void> | null = null;
 let latestQuestDbHealth: QuestDbDependencyHealth | null = null;
@@ -584,35 +588,13 @@ const flushInactiveBuffer = async (): Promise<void> => {
     }
   }
 };
-type ObservedDataGroups = { data: Set<string | null>; table: Set<string | null> };
-const observedDataGroupsByTopic = new Map<string, ObservedDataGroups>();
-
-const recordObservedDataGroup = (
-  topic: string,
-  kind: "data" | "table",
-  dataGroup: string | null | undefined,
-): boolean => {
+const topicObservations = new TopicObservations();
+const recordObservedDataGroup = (topic: string, kind: "data" | "table", dataGroup: string | null | undefined): boolean => {
   const normalizedTopic = sanitizeTopicName(topic ?? "");
-  if (!normalizedTopic) return false;
-  let entry = observedDataGroupsByTopic.get(normalizedTopic);
-  if (!entry) {
-    entry = { data: new Set(), table: new Set() };
-    observedDataGroupsByTopic.set(normalizedTopic, entry);
-  }
-  const set = kind === "data" ? entry.data : entry.table;
-  const value = dataGroup ?? null;
-  if (set.has(value)) return false;
-  set.add(value);
-  return true;
+  return normalizedTopic && activeTopicSet.has(normalizedTopic) ? topicObservations.record(normalizedTopic, kind, dataGroup) : false;
 };
-
-const getObservedDataGroups = (topic: string, suffix: "_data" | "_table"): Array<string | null> => {
-  const normalizedTopic = sanitizeTopicName(topic);
-  const observed = observedDataGroupsByTopic.get(normalizedTopic);
-  const set = suffix === "_data" ? observed?.data : observed?.table;
-  if (set && set.size > 0) return Array.from(set);
-  return [];
-};
+const getObservedDataGroups = (topic: string, suffix: "_data" | "_table"): Array<string | null> =>
+  topicObservations.groups(sanitizeTopicName(topic), suffix);
 
 // Periodically clean up the processed events cache to prevent it from growing indefinitely
 setInterval(() => {
@@ -624,6 +606,7 @@ await storedReplay.recoverStaleProcessing();
 
 try {
   const active = await ActiveUnsTopics.getActiveUnsTopics();
+  activeTopicsAuthoritative = active.source === "controller";
   activeTopics = canonicalizeTopics(active.topics);
   topicMetadata = active.metaByTopic;
   rebuildActiveTopicSet();
@@ -790,7 +773,18 @@ async function findNearestPackageJson(): Promise<string | null> {
 /**
  * Publish QuestDB mapping info so the controller can expose APIs.
  */
-async function publishQuestDbMapping() {
+function publishQuestDbMapping(): Promise<void> {
+  mappingPublishRequested = true;
+  if (mappingPublishPromise) return mappingPublishPromise;
+  mappingPublishPromise = (async () => {
+    while (mappingPublishRequested) {
+      mappingPublishRequested = false;
+      await publishQuestDbMappingSnapshot();
+    }
+  })().finally(() => { mappingPublishPromise = undefined; });
+  return mappingPublishPromise;
+}
+async function publishQuestDbMappingSnapshot() {
   if (!mqttInput) return;
   try {
     const pkg = await getPackageInfo();
@@ -809,6 +803,7 @@ async function publishQuestDbMapping() {
       );
     });
     const mappings = mappingsFromTopics;
+
     const payload = {
       package: pkg.name,
       version: pkg.version,
@@ -817,11 +812,11 @@ async function publishQuestDbMapping() {
         configurationString: resolveQuestDbPublicConfigurationString(config.questdb),
       },
       mappings,
+      ...(activeTopicsAuthoritative ? { activeTopicsSnapshot: { schemaVersion: 1, topics: [...activeTopics] } } : {}),
       updatedAt: new Date().toISOString(),
     };
     const hash = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
     if (hash === lastMappingHash) return;
-    lastMappingHash = hash;
     const versionSegment = pkg.version.replace(/\./g, "-");
     const topic = `uns-infra/${pkg.name}/${versionSegment}/${config.uns?.processName ?? "uns-archiver"}/questdb-mapping`;
     const message = JSON.stringify(payload);
@@ -841,6 +836,7 @@ async function publishQuestDbMapping() {
         },
       },
     );
+    lastMappingHash = hash;
   } catch (err) {
     logger.error(`Failed to publish QuestDB mapping: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -1179,13 +1175,21 @@ function refreshActiveTopics(): Promise<void> {
 
   activeTopicsRefreshPromise = (async () => {
     try {
-      const { topics, metaByTopic } = await ActiveUnsTopics.getActiveUnsTopics();
+      const { topics, metaByTopic, source } = await ActiveUnsTopics.getActiveUnsTopics();
+      // Fallback data supports startup continuity, never removal authority.
+      if (source !== "controller") {
+        activeTopicsAuthoritative = false;
+        return;
+      }
+      activeTopicsAuthoritative = true;
       const newActiveTopics = canonicalizeTopics(topics);
       if (newActiveTopics.join("\u0000") !== activeTopics.join("\u0000")) {
         logger.info("Active topic registry changed. Updating active-topic gate and MQTT subscriptions.");
+        topicObservations.reconcile(newActiveTopics);
         activeTopics = newActiveTopics;
         topicMetadata = metaByTopic;
         rebuildActiveTopicSet();
+        await publishQuestDbMapping();
         await subscribeToTopics(activeTopics);
         await flushInactiveBuffer();
       } else {
@@ -1197,6 +1201,7 @@ function refreshActiveTopics(): Promise<void> {
       lastTopicsRefreshAt = Date.now();
       await processStoredEvents();
     } catch (error: any) {
+      activeTopicsAuthoritative = false;
       logger.error(`Failed to refresh active topics: ${error.message}`);
     }
   })().finally(() => {
