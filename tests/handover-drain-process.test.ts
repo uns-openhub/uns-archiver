@@ -8,7 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { LegacyImportManager } from "../src/legacy-import.js";
 
-for (const mode of ["success", "failure", "timeout"]) {
+for (const mode of ["success", "failure", "timeout", "signal-SIGINT", "signal-SIGTERM"]) {
   test(
     `real source process ${mode}: drain exit and retained files are recoverable`,
     { timeout: 15_000 },
@@ -26,6 +26,9 @@ for (const mode of ["success", "failure", "timeout"]) {
           path.join(source, name),
           JSON.stringify({ topic: "test/topic", message: "{}" }),
         );
+      const standaloneEnv = { ...process.env };
+      for (const key of Object.keys(standaloneEnv)) if (key.startsWith("UNS_CONTROLLER_")) delete standaloneEnv[key];
+      const successful = mode === "success" || mode.startsWith("signal-");
       const child = spawn(
         process.execPath,
         [
@@ -39,7 +42,7 @@ for (const mode of ["success", "failure", "timeout"]) {
           root,
           mode,
         ],
-        { stdio: ["ignore", "pipe", "pipe"] },
+        { env: standaloneEnv, stdio: ["ignore", "pipe", "pipe"] },
       );
       let output = "";
       child.stdout.on("data", (chunk) => {
@@ -51,16 +54,26 @@ for (const mode of ["success", "failure", "timeout"]) {
       t.after(() => {
         if (child.exitCode === null) child.kill("SIGKILL");
       });
-      const [code, signal] = await once(child, "exit");
+      const exited = once(child, "exit");
+      if (mode.startsWith("signal-")) {
+        let ready = false;
+        for (let attempt = 0; attempt < 200; attempt++) {
+          try { await fs.stat(path.join(root, "signal-ready")); ready = true; break; }
+          catch { await new Promise(resolve => setTimeout(resolve, 20)); }
+        }
+        assert.ok(ready, "Standalone signal handler was not ready");
+        child.kill(mode.slice("signal-".length) as NodeJS.Signals);
+      }
+      const [code, signal] = await exited;
       assert.equal(signal, null, output);
-      assert.equal(code, mode === "success" ? 0 : 1, output);
+      assert.equal(code, successful ? 0 : 1, output);
       assert.equal(output.includes("sensitive hook error text"), false);
-    assert.ok(output.includes(mode === "success" ? "source drain completed" : mode === "timeout" ? "source drain timed-out" : "source drain failed"), output);
+    assert.ok(output.includes(mode.startsWith("signal-") ? "Standalone signal drain completed" : mode === "success" ? "source drain completed" : mode === "timeout" ? "source drain timed-out" : "source drain failed"), output);
       const remaining = (await fs.readdir(source)).filter((name) =>
         name.endsWith(".event"),
       );
       assert.equal(remaining.length, mode === "timeout" ? 2 : 1, output);
-      if (mode === "success")
+      if (successful)
         assert.equal(
           await fs.readFile(path.join(root, "writer-closed"), "utf8"),
           "yes",
