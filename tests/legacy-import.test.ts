@@ -18,6 +18,7 @@ async function fixture(
     write?: (event: any) => Promise<LegacyWriteResult>;
     headroom?: () => boolean;
     policy?: () => string;
+    acceptingCommands?: () => boolean;
     settings?: any;
   } = {},
 ) {
@@ -36,6 +37,7 @@ async function fixture(
       instanceId: "test-instance",
       policyDigest: options.policy ?? (() => "policy-1"),
       canWrite: () => true,
+      acceptingCommands: options.acceptingCommands,
       hasLiveHeadroom: options.headroom ?? (() => true),
       settings: { intervalMs: 100, ...options.settings },
       write: options.write ?? (async () => ({ outcome: "written" })),
@@ -558,3 +560,12 @@ test("forced process exit leaves a claim and file recoverable only on reviewed r
   assert.equal(manager.status()[0].job?.written, 1);
   assert.equal(manager.status()[0].job?.state, "completed");
 });
+
+ test("queued import commands recheck runtime admission before changing state", async t => {
+  let accepting = true;
+  const f = await fixture(t, { acceptingCommands: () => accepting });
+  const pending = f.command("start");
+  accepting = false;
+  await assert.rejects(pending, { code: "runtime-released" });
+  assert.equal(f.manager.status()[0].job, null);
+ });

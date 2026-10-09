@@ -130,6 +130,7 @@ export class LegacyImportManager {
       settings?: LegacyImportSettings;
       policyDigest: () => string;
       canWrite: () => boolean;
+      acceptingCommands?: () => boolean;
       hasLiveHeadroom: () => boolean;
       write: (
         event: LegacyEvent,
@@ -265,6 +266,7 @@ export class LegacyImportManager {
 
   private async applyCommand(command: ImportCommand) {
     if (this.closed) fault("importer-stopping");
+    if (this.options.acceptingCommands?.() === false) fault("runtime-released");
     if (
       !ID.test(command.requestId) ||
       !Number.isSafeInteger(command.expectedRevision) ||
@@ -276,6 +278,8 @@ export class LegacyImportManager {
     const runtime = this.getSource(command.sourceId);
     if (command.action !== "pause") await runtime.active;
     await this.load(runtime);
+    if (this.closed) fault("importer-stopping");
+    if (this.options.acceptingCommands?.() === false) fault("runtime-released");
     const commandDigest = digest(command);
     if (runtime.job?.lastCommand?.requestId === command.requestId) {
       if (runtime.job.lastCommand.digest !== commandDigest)
@@ -291,6 +295,8 @@ export class LegacyImportManager {
       if (runtime.job?.state === "running") fault("job-already-running");
       if (command.action === "resume" && !runtime.job) fault("job-not-started");
       await this.claim(runtime);
+      if (this.closed) fault("importer-stopping");
+      if (this.options.acceptingCommands?.() === false) fault("runtime-released");
       if ((runtime.job?.revision ?? 0) !== command.expectedRevision)
         fault("revision-conflict");
       if (
@@ -333,6 +339,8 @@ export class LegacyImportManager {
       if (runtime.job!.state === "completed") fault("job-already-completed");
       // Never change a persisted job owned by another runtime.
       await this.claim(runtime);
+      if (this.closed) fault("importer-stopping");
+      if (this.options.acceptingCommands?.() === false) fault("runtime-released");
       if ((runtime.job?.revision ?? 0) !== command.expectedRevision)
         fault("revision-conflict");
       runtime.job!.state = command.action === "pause" ? "paused" : "cancelled";

@@ -418,3 +418,14 @@ SDK's exit behavior. MQTT `handover_fin`/`handover_ack` are ownership-transfer
 messages, not application-drain receipts. Confirm actual old-process exit before
 starting legacy import. Real broker/QuestDB/Runtime upgrade acceptance remains
 separate from the candidate's subprocess recovery tests.
+
+### Operator import status
+
+Authenticated `imports?format=operator` returns protocol 1, a nonsecret launch
+identity, runtime selectors and cached source status. The controller import dialog
+compares these selectors with the selected instance and sends `expectedOwnerId`
+on commands and explicit inspection requests. A move/restart rejects stale
+commands; released runtimes reject import control. Scripts may still use the
+original array status and command contract. `expectedRevision` and `requestId`
+remain required. Source closure remains an operator review, not a historical
+MQTT acknowledgement. No source path or credential is returned in this status.

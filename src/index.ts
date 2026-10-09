@@ -15,7 +15,7 @@ import {
 } from "@uns-kit/core";
 import UnsMqttProxy from "@uns-kit/core/uns-mqtt/uns-mqtt-proxy.js";
 import { Sender } from "@questdb/nodejs-client";
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { existsSync, mkdirSync, promises as fs, renameSync, unlinkSync, writeFileSync } from "fs";
 import * as path from "path";
 import { buildServiceApiInteractions, type UnsProxyProcessWithApi } from "@uns-kit/api";
@@ -454,6 +454,7 @@ const legacyImports = new LegacyImportManager({
   liveDirectory: EVENT_STORAGE_DIR,
   instanceId: `${config.uns.processName}:${process.env.UNS_CONTROLLER_NAME ?? "standalone"}:${path.resolve(".")}`,
   policyDigest: legacyStoragePolicyDigest,
+  acceptingCommands: () => !shuttingDown,
   canWrite: () => !shuttingDown && latestQuestDbHealth?.healthy !== false,
   hasLiveHeadroom: () => hasStoredReplayLiveHeadroom(ingestQueue?.snapshot(), ingestQueueMaxEvents, ingestQueueMaxBytes),
   write: writeLegacyPacket,
@@ -485,7 +486,16 @@ const archiverShutdown = createArchiverShutdown(
 );
 
 legacyImports.startBackground();
-const importApi = legacyImportApi(legacyImports);
+const importApi = legacyImportApi(legacyImports, {
+  owner: {
+    ownerId: randomUUID(),
+    processName: config.uns.processName,
+    controllerName: process.env.UNS_CONTROLLER_NAME?.trim() || null,
+    version: process.env.version?.trim() || (await getPackageInfo()).version,
+    instanceId: process.env.RTT_INSTANCE_ID?.trim() || null,
+  },
+  acceptingCommands: () => !shuttingDown,
+});
 
 async function writeLegacyPacket(event: LegacyEvent, context: { startedAt: string }): Promise<LegacyWriteResult> {
   const mqttEvent = event as ArchiverMqttEvent;
@@ -1047,7 +1057,7 @@ async function setupApiProxy() {
       importControl: {
         topic: CONTROL_TOPIC, asset: CONTROL_ASSET, objectType: CONTROL_OBJECT_TYPE,
         objectId: CONTROL_OBJECT_ID, attribute: "import-control", method: "POST",
-        description: "Legacy import only: start, pause, resume, cancel. JSON body: action, sourceId, requestId, expectedRevision, confirmSourceClosed. Start/resume require explicit confirmation that old MQTT/replay writer has exited. No arbitrary path accepted.",
+        description: "Legacy import only: start, pause, resume, cancel. JSON body: action, sourceId, requestId, expectedRevision, confirmSourceClosed, optional expectedOwnerId. Operator format status exposes runtime selectors and launch identity. Start/resume require explicit confirmation that old MQTT/replay writer has exited. No arbitrary path accepted.",
         tags: ["archiver", "legacy-import"], handler: () => undefined,
       },
     });

@@ -77,7 +77,9 @@ test("real SDK HTTP/JWKS protects import commands and serves cached status durin
     ]);
     await fs.rm(root, { recursive: true, force: true });
   });
-  const handlers = legacyImportApi(manager);
+  let acceptingCommands = true;
+  const owner = { ownerId: "launch-1", processName: "local", controllerName: "controller-1", version: "v5.2.20", instanceId: "instance-1" };
+  const handlers = legacyImportApi(manager, { owner, acceptingCommands: () => acceptingCommands });
   api.event.on("apiGetEvent", handlers.get);
   api.event.on("apiPostEvent", handlers.post);
   await api.get("system/", "archiver", "service", "local", "imports");
@@ -117,6 +119,7 @@ test("real SDK HTTP/JWKS protects import commands and serves cached status durin
     requestId: "start-test",
     expectedRevision: 0,
     confirmSourceClosed: true,
+    expectedOwnerId: owner.ownerId,
   };
   assert.equal((await request("imports")).status, 401);
   assert.equal((await request("import-control", undefined, start)).status, 401);
@@ -142,6 +145,15 @@ test("real SDK HTTP/JWKS protects import commands and serves cached status durin
     ).status,
     400,
   );
+  const envelope = await request("imports?format=operator", reader);
+  assert.deepEqual(((await envelope.json()) as any).owner, owner);
+  assert.equal((await request("imports?format=operator&action=inspect&sourceId=old", admin)).status, 400);
+  assert.equal((await request("imports?format=operator&action=inspect&sourceId=old&expectedOwnerId=other", admin)).status, 409);
+  assert.equal((await request("imports?format=operator&action=inspect&sourceId=old&expectedOwnerId=launch-1", admin)).status, 200);
+  const wrongOwner = await request("import-control", admin, { ...start, expectedOwnerId: "other" });
+  assert.equal(wrongOwner.status, 409);
+  assert.deepEqual(await wrongOwner.json(), { error: "runtime-owner-changed" });
+  assert.equal(manager.status()[0].job, null);
   const started = await request("import-control", admin, start);
   assert.equal(started.status, 200);
   assert.equal(((await started.json()) as any).revision, 1);
@@ -162,6 +174,13 @@ test("real SDK HTTP/JWKS protects import commands and serves cached status durin
   assert.equal(paused.status, 200);
   assert.equal(((await paused.json()) as any).state, "paused");
   assert.ok(await fs.stat(path.join(source, "a.event")));
+  acceptingCommands = false;
+  const released = await request("import-control", admin, { ...start, action: "resume", requestId: "resume-test", expectedRevision: 2 });
+  assert.equal(released.status, 409);
+  assert.deepEqual(await released.json(), { error: "runtime-released" });
+  assert.equal((await request("imports?format=operator&action=inspect&sourceId=old&expectedOwnerId=launch-1", admin)).status, 409);
+  const statusReleased = await request("imports?format=operator", reader);
+  assert.equal(((await statusReleased.json()) as any).acceptingCommands, false);
   finish();
   await running;
 });
