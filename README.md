@@ -175,7 +175,24 @@ The new instance continues MQTT capture into its own `event_storage`. Importing
 the old instance's queue is a **separate, explicitly started job**. It does not
 move the entire queue into the live spool or change `/control` semantics.
 
-Declare a small, **node-local** allowlist in the archiver configuration:
+For a synchronized cluster instance, provision **`legacy-import-sources.json`**
+in that instance's working directory before starting it. It contains only the
+local allowlist:
+
+```json
+[
+  { "id": "retired-instance", "directory": "/srv/openhub/retired/archiver/event_storage" }
+]
+```
+
+This optional startup file is limited to 64 KiB and 16 unique source IDs. Symlinks,
+hardlinks, invalid JSON and unknown fields are rejected. Invalid local provisioning
+stops startup; it never silently enables a different source. It is not a declared
+portable runtime file and must be provisioned separately on the owning node.
+No controller is required to read it. Changing it requires an archiver restart.
+
+A standalone, unsynchronized instance may alternatively keep the allowlist in
+its local startup configuration:
 
 ```json
 {
@@ -199,8 +216,10 @@ symlinks and cannot overlap the current live spool or another source. At most
 16 sources are allowed. This allowlist and the import limits are read at startup:
 restart the archiver after changing them. The service does not publish these
 physical paths over MQTT. Keep them out of portable/shared configuration
-templates: a controller that copies the entire RTT configuration can also copy
-these values. The source and job must remain on the same host during recovery.
+templates. The companion controller portability guard rejects nonempty `legacySources` in synchronized
+profiles, including provider references. Do not configure both this field and the
+local provisioning file. The source and job must remain on the same host during
+recovery. Older controllers do not enforce this explicit field restriction.
 
 After the old MQTT/replay process has exited, use its preserved source ID:
 

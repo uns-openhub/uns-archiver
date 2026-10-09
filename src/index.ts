@@ -1,3 +1,4 @@
+import { loadLegacySources } from "./legacy-source-file.js";
 import { TopicObservations } from "./topic-observations.js";
 import {
   AuthClient,
@@ -446,7 +447,7 @@ const legacyStoragePolicyDigest = () => createHash("sha256").update(JSON.stringi
 })).digest("hex");
 await ensureEventStorageDirectories();
 const legacyImports = new LegacyImportManager({
-  sources: legacyRuntimeSettings?.legacySources ?? [],
+  sources: await loadLegacySources(path.resolve("."), legacyRuntimeSettings?.legacySources),
   settings: { ...legacyRuntimeSettings?.legacyImport,
     concurrency: Math.min(legacyRuntimeSettings?.legacyImport?.concurrency ?? 64,
       Math.max(1, Math.floor(ingestQueueMaxEvents / 8))) },

@@ -55,3 +55,6 @@ active_topics_cache.json
 
 event_storage
 .uns-archiver-import/
+
+# Host-local recovery allowlist
+legacy-import-sources.json
