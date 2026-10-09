@@ -33,10 +33,11 @@ import {
 import { CircuitBreaker, errorMessage, isRetryableNetworkError, withRetry } from "./resilience.js";
 import { canonicalizeTopics, subscriptionDelta } from "./subscription-state.js";
 import { BoundedIngestQueue } from "./bounded-ingest-queue.js";
+import { storedReplayControlStatus } from "./stored-replay-control.js";
 import { drainArchiverForShutdown } from "./archiver-shutdown.js";
 import { resolveEventDeduplicationDisposition } from "./event-deduplication.js";
 import { StoredEventReplay } from "./stored-event-replay.js";
-import { assessIngestHealth, INGEST_BACKLOG_ALERT_EVENTS, type IngestHealth } from "./ingest-health.js";
+import { assessIngestHealth, type IngestHealth } from "./ingest-health.js";
 import { ArchiverEntityBindingClient } from "./entity-binding-client.js";
 import {
   DEFAULT_ENTITY_SCOPE_KEY,
@@ -417,7 +418,7 @@ const storedReplay = new StoredEventReplay({
   eventFileExtension: EVENT_FILE_EXTENSION,
   processingExtension: EVENT_PROCESSING_EXTENSION,
   isReady: () => activeTopicsReady,
-  isStopping: () => shuttingDown,
+  isStopping: () => shuttingDown || ingestionPaused,
   hasLiveHeadroom: () =>
     hasStoredReplayLiveHeadroom(
       ingestQueue?.snapshot(),
@@ -440,8 +441,11 @@ async function publishArchiverServiceMetadata() {
   if (!serviceMetadataPublisher) return;
   const health = latestQuestDbHealth ?? (await refreshQuestDbHealth());
   const previousIngestHealthy = latestIngestHealth?.healthy;
+  const inspection = storedReplay.snapshot();
   const ingestHealth = assessIngestHealth(
-    await storedReplay.countQueuedUpTo(INGEST_BACKLOG_ALERT_EVENTS),
+    inspection.queuedEvents,
+    inspection.capturedAt ?? undefined,
+    inspection,
   );
   latestIngestHealth = ingestHealth;
   if (previousIngestHealthy !== ingestHealth.healthy) {
@@ -602,7 +606,7 @@ setInterval(() => {
   logger.info("Cleared processed events cache.");
 }, 3600000); // Every hour
 
-await storedReplay.recoverStaleProcessing();
+storedReplay.startBackgroundMaintenance();
 
 try {
   const active = await ActiveUnsTopics.getActiveUnsTopics();
@@ -614,7 +618,7 @@ try {
   lastTopicsRefreshAt = Date.now();
   await subscribeToTopics(activeTopics);
   await setupApiProxy();
-  await processStoredEvents();
+  requestStoredEventReplay();
 } catch (error) {
   const reason = error instanceof Error ? error : new Error(String(error));
   logger.error(`Failed to refresh active topics on startup: ${reason.message}`);
@@ -1006,29 +1010,17 @@ async function handleApiGetEvent(event: any) {
   const path = event?.req?.path ?? "";
   const action = (event?.req?.query?.action as string | undefined)?.toLowerCase();
   try {
-    if (path.endsWith("/control") && action === "pause") {
-      ingestionPaused = true;
-      event.res.json({ paused: true, queuedEvents: await countStoredEvents() });
-      return;
-    }
-    if (path.endsWith("/control") && action === "resume") {
-      ingestionPaused = false;
-      await processStoredEvents();
-      event.res.json({ paused: false, queuedEvents: await countStoredEvents() });
-      return;
-    }
     if (path.endsWith("/control")) {
-      event.res.json({ paused: ingestionPaused, queuedEvents: await countStoredEvents() });
+      event.res.json(storedControlStatus(action));
       return;
     }
     if (path.endsWith("/topics")) {
-      const queuedEvents = await countStoredEvents();
+      const queueStatus = storedControlStatus();
       event.res.json({
         activeTopics,
         topicMetadataCount: Object.keys(topicMetadata ?? {}).length,
-        paused: ingestionPaused,
-        queuedEvents,
-        storedReplay: storedReplay.diagnostics(queuedEvents),
+        ...queueStatus,
+        storedReplay: storedReplay.diagnostics(),
         questDbBatch: questDbWriter.getBatchDiagnostics(),
         ingestQueue: ingestQueue?.snapshot(),
         processedEventIdsSize: processedEventIds.size,
@@ -1199,7 +1191,7 @@ function refreshActiveTopics(): Promise<void> {
       }
       activeTopicsReady = true;
       lastTopicsRefreshAt = Date.now();
-      await processStoredEvents();
+      requestStoredEventReplay();
     } catch (error: any) {
       activeTopicsAuthoritative = false;
       logger.error(`Failed to refresh active topics: ${error.message}`);
@@ -1514,8 +1506,19 @@ function hashString(str: string): string {
   return createHash("sha256").update(str).digest("hex");
 }
 
-async function countStoredEvents(): Promise<number> {
-  return await storedReplay.countQueued();
+function storedControlStatus(action?: string) {
+  return storedReplayControlStatus(action, {
+    getPaused: () => ingestionPaused,
+    setPaused: (paused) => { ingestionPaused = paused; },
+    requestReplay: requestStoredEventReplay,
+    snapshot: () => storedReplay.snapshot(),
+  });
+}
+
+function requestStoredEventReplay(): void {
+  void processStoredEvents().catch(() => {
+    logger.warn("Stored event replay request failed.");
+  });
 }
 
 /**
@@ -1626,7 +1629,7 @@ async function cleanup() {
         await ingestQueue.waitForIdle();
       },
       waitForStoredReplay: async () => {
-        await storedReplay.waitForIdle();
+        await storedReplay.close();
       },
       closeQuestDb: async () => {
         await questDbWriter.close();

@@ -102,22 +102,62 @@ live traffic joining the same sender, this is roughly one flush per 64 replayed
 events instead of one flush per event; table shape, live traffic, and
 `questdb.batch.maxRows` determine the actual ratio. Replay concurrency is
 derived from live capacity (up to one eighth of `ingestQueueMaxEvents`) and
-never starts while the live queue has consumed its 25% reserve. On startup,
-stale `.processing` files from a stopped process are returned to the durable
-`.event` queue before replay begins. The authenticated `topics` control status
-exposes aggregate stored-replay counters and last-run diagnostics without
-exposing event content.
+never starts while the live queue has consumed its 25% reserve.
 
-Directory scans use streaming iteration and retain only the current replay
-batch in memory. This keeps startup, status counting, and replay bounded even
-when an outage has left millions of event files in the durable spool. Lowering
-the replay interval drains such a backlog faster; raise the rate gradually and
-watch QuestDB dependency health and live ingest headroom.
+### Responsive spool status and recovery
 
-The controller health signal samples at most 1,000 queued event files every
-30 seconds. At that threshold it reports archive ingest as degraded and warns
-that recent MQTT packets may not yet be visible in history. The authenticated
-`topics` endpoint still reports an exact queued count when requested.
+MQTT startup and control responses do not wait for a full directory count or
+orphan recovery. Inventory and stale `.processing` recovery run in the background;
+replay, inventory and recovery each retain their own streaming directory cursor
+between passes. Each pass visits at most **512 entries** (including nonmatching
+names and directories) and checks a **25 ms work budget** before the next read.
+The current filesystem operation cannot be forcibly cancelled, so a stalled read
+can exceed that budget; it still does not block a cached HTTP status response.
+Only the selected replay batch is retained in memory. All cursors close on normal
+archiver shutdown. Restart begins a fresh background traversal; there is no
+portable, persisted filesystem cursor in this release.
+
+Maintenance continues incomplete scans every 100 ms. After a complete traversal,
+inventory waits 5 seconds and recovery 30 seconds before starting another sweep.
+This prevents every health poll or API caller from reopening a large directory.
+The current instance's PID locks and live PIDs remain protected during automatic
+recovery; PID reuse is not resolved by this change. Conflicting `.event` and
+`.processing` files are preserved for inspection rather than silently discarding
+one. This is not yet a legacy-directory import API or a handover drain hook.
+
+Authenticated `/control` status, pause and resume return immediately from cached
+inspection. Resume schedules replay without waiting for QuestDB to flush. Pause
+keeps its existing ingestion semantics: new live events go to durable storage and
+new replay work is stopped; it is not a separate legacy-import pause. A running
+writer may still finish after the acknowledgement.
+
+Both `/control` and `/topics` include:
+
+- `queuedEvents`: cached observed count or lower bound; `null` when unavailable,
+  or when a partial scan has found zero (which cannot prove an empty queue).
+- `queuedEventsCountKind`: `unknown`, `lower-bound`, or `observed`.
+- `queueInspection`: separate `queuedEvents`, `processingFiles`, `unresolvedProcessingFiles`, `otherEntries`,
+  `entriesVisited`, `scanComplete`, `startedAt`, `capturedAt`, and sanitized
+  `lastError` fields.
+- `/topics` also includes `storedReplay.queueInspection` and
+  `storedReplay.processingRecovery`, with existing replay/writer counters.
+
+`observed` means a traversal reached its end, **not** an atomic count: writes,
+recovery and replay can change the directory during the scan. A lower bound is
+also an observation over the stated scan window, not a guaranteed current depth
+once those files have been replayed. Use timestamps and inspection progress when
+interpreting counts. An inaccessible or missing directory is `unknown`, never a
+successful empty scan. A zero `.event` count does not cover `.processing` or other
+unfinished files. Event contents, names and owner PIDs are not exposed in status.
+
+The controller ingest-health signal uses this cached inspection every 30 seconds.
+A backlog at or above 1,000 observed queued files, incomplete/stale inspection,
+or unresolved processing files reports unconfirmed/degraded archive freshness.
+Processing files currently owned by this replay's active batch do not degrade
+health on their own. Other processing files may belong to another process or
+interrupted replay; the signal asks the operator to inspect that distinction
+instead of declaring the disk queue empty. A healthy
+QuestDB connection alone does not prove recent history has been archived.
 
 The `config-development-podman.json` profile is tuned for the bundled local
 Podman runtime: it uses a 1024-event/32 MiB live queue, 128 concurrent ingest

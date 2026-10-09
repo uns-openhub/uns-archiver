@@ -27,10 +27,12 @@ const createWorkspace = async (t: test.TestContext) => {
   const events = path.join(root, "event_storage");
   const failed = path.join(events, "failed");
   await fs.mkdir(failed, { recursive: true });
+  const replays: StoredEventReplay[] = [];
   t.after(async () => {
+    await Promise.all(replays.map((replay) => replay.close()));
     await fs.rm(root, { recursive: true, force: true });
   });
-  return { events, failed };
+  return { events, failed, replays };
 };
 
 const writeEvent = async (
@@ -42,7 +44,11 @@ const writeEvent = async (
 };
 
 const createReplay = (
-  directories: { events: string; failed: string },
+  directories: {
+    events: string;
+    failed: string;
+    replays?: StoredEventReplay[];
+  },
   options: {
     processEvent: (event: unknown) => Promise<boolean>;
     ready?: () => boolean;
@@ -50,9 +56,10 @@ const createReplay = (
     batchSize?: number;
     concurrency?: number;
     currentProcessId?: number;
+    scanMaxEntries?: number;
   },
-) =>
-  new StoredEventReplay({
+) => {
+  const replay = new StoredEventReplay({
     eventStorageDirectory: directories.events,
     failedStorageDirectory: directories.failed,
     eventFileExtension: ".event",
@@ -66,7 +73,14 @@ const createReplay = (
       concurrency: options.concurrency ?? 8,
     }),
     processEvent: options.processEvent,
+    getScanLimits: () => ({
+      maxEntries: options.scanMaxEntries ?? 512,
+      maxDurationMs: 25,
+    }),
   });
+  directories.replays?.push(replay);
+  return replay;
+};
 
 test("replays while live work remains pending when its reserved headroom is available", async (t) => {
   const directories = await createWorkspace(t);
@@ -93,13 +107,16 @@ test("replays while live work remains pending when its reserved headroom is avai
   assert.notEqual(diagnostics.lastSuccessAt, null);
 });
 
-test("bounds a health backlog sample without changing the exact queue count", async (t) => {
+test("bounds a health backlog sample and reports a completed small-directory observation", async (t) => {
   const directories = await createWorkspace(t);
   const replay = createReplay(directories, { processEvent: async () => true });
   for (let index = 0; index < 5; index += 1) {
     await writeEvent(directories.events, `event-${index}`);
   }
-  await fs.writeFile(path.join(directories.events, "unfinished.tmp"), "partial");
+  await fs.writeFile(
+    path.join(directories.events, "unfinished.tmp"),
+    "partial",
+  );
 
   assert.equal(await replay.countQueuedUpTo(3), 3);
   assert.equal(await replay.countQueued(), 5);
@@ -109,9 +126,12 @@ test("returns an unknown sample when event storage cannot be scanned", async (t)
   const directories = await createWorkspace(t);
   const filePath = path.join(directories.events, "not-a-directory");
   await fs.writeFile(filePath, "file");
-  const replay = createReplay({ events: filePath, failed: directories.failed }, {
-    processEvent: async () => true,
-  });
+  const replay = createReplay(
+    { events: filePath, failed: directories.failed },
+    {
+      processEvent: async () => true,
+    },
+  );
   assert.equal(await replay.countQueuedUpTo(3), null);
 });
 
@@ -277,6 +297,7 @@ test("does not start a new replay pass after shutdown begins", async (t) => {
       return true;
     },
   });
+  directories.replays.push(replay);
   await writeEvent(directories.events, "shutdown");
 
   await replay.run();
@@ -372,4 +393,231 @@ test("coalesces overlapping timer, refresh, and manual replay requests", async (
   gate.resolve();
   await Promise.all([timerRun, refreshRun, manualRun]);
   assert.equal(started, 1);
+});
+
+test("inventory is bounded by all entries, and partial zero is not an empty queue", async (t) => {
+  const directories = await createWorkspace(t);
+  for (let i = 0; i < 12; i++)
+    await fs.writeFile(path.join(directories.events, `${i}.tmp`), "partial");
+  await writeEvent(directories.events, "queued");
+  const replay = createReplay(directories, {
+    processEvent: async () => true,
+    scanMaxEntries: 2,
+  });
+  assert.equal(replay.snapshot().countKind, "unknown");
+  assert.equal(await replay.countQueued(), null);
+  assert.equal(replay.snapshot().scanComplete, false);
+  assert.equal(replay.snapshot().entriesVisited, 2);
+  assert.equal(await replay.countQueuedUpTo(1000), null);
+  for (let i = 0; i < 20 && !replay.snapshot().scanComplete; i++) {
+    const before = replay.snapshot().entriesVisited;
+    await replay.refreshQueueSnapshot();
+    assert.ok(replay.snapshot().entriesVisited - before <= 2);
+  }
+  assert.equal(replay.snapshot().countKind, "observed");
+  assert.equal(replay.snapshot().queuedEvents, 1);
+  assert.equal(replay.snapshot().otherEntries, 13); // includes failed directory
+  assert.equal(replay.snapshot().entriesVisited, 14);
+});
+
+test("cached snapshots neither open storage nor conceal an inspection error", async (t) => {
+  const directories = await createWorkspace(t);
+  const replay = createReplay(directories, { processEvent: async () => true });
+  await replay.refreshQueueSnapshot();
+  const cached = replay.snapshot();
+  assert.equal(cached.queuedEvents, 0);
+  await fs.rename(directories.events, `${directories.events}-original`);
+  await fs.writeFile(directories.events, "not a directory");
+  for (let i = 0; i < 100; i++) assert.deepEqual(replay.snapshot(), cached);
+  cached.queuedEvents = 999;
+  assert.equal(replay.snapshot().queuedEvents, 0);
+  await replay.refreshQueueSnapshot();
+  assert.equal(replay.snapshot().queuedEvents, null);
+  assert.equal(replay.snapshot().countKind, "unknown");
+  assert.equal(replay.snapshot().scanComplete, false);
+  assert.equal(replay.snapshot().lastError, "stored-replay-count-failed");
+});
+
+test("counts processing files separately rather than presenting a zero as a drained spool", async (t) => {
+  const directories = await createWorkspace(t);
+  await fs.writeFile(
+    path.join(
+      directories.events,
+      `interrupted.event.${process.pid}.1.processing`,
+    ),
+    "{}",
+  );
+  const replay = createReplay(directories, { processEvent: async () => true });
+  await replay.refreshQueueSnapshot();
+  assert.equal(replay.snapshot().queuedEvents, 0);
+  assert.equal(replay.snapshot().processingFiles, 1);
+  assert.equal(replay.snapshot().unresolvedProcessingFiles, 1);
+  assert.equal(replay.snapshot().scanComplete, true);
+});
+
+test("replay makes forward progress past nonmatching entries over several bounded passes", async (t) => {
+  const directories = await createWorkspace(t);
+  for (let i = 0; i < 20; i++)
+    await fs.writeFile(path.join(directories.events, `${i}.tmp`), "partial");
+  await writeEvent(directories.events, "valid");
+  let processed = 0;
+  const replay = createReplay(directories, {
+    processEvent: async () => {
+      processed++;
+      return true;
+    },
+    scanMaxEntries: 2,
+  });
+  for (let i = 0; i < 30 && processed === 0; i++) await replay.run();
+  assert.equal(processed, 1);
+  assert.equal(replay.diagnostics().successful, 1);
+});
+
+test("recovery advances in bounded passes and preserves conflicting processing content", async (t) => {
+  const directories = await createWorkspace(t);
+  for (let i = 0; i < 7; i++) {
+    await fs.writeFile(
+      path.join(directories.events, `stale-${i}.event.999999999.1.processing`),
+      JSON.stringify({ id: i }),
+    );
+  }
+  await writeEvent(directories.events, "conflict", { original: true });
+  const conflict = path.join(
+    directories.events,
+    "conflict.event.999999999.1.processing",
+  );
+  await fs.writeFile(conflict, JSON.stringify({ distinctProcessing: true }));
+  const replay = createReplay(directories, {
+    processEvent: async () => true,
+    scanMaxEntries: 2,
+  });
+  await replay.recoverStaleProcessing();
+  assert.equal(replay.diagnostics().processingRecovery.scanComplete, false);
+  assert.equal(replay.diagnostics().processingRecovery.entriesVisited, 2);
+  for (
+    let i = 0;
+    i < 20 && !replay.diagnostics().processingRecovery.scanComplete;
+    i++
+  ) {
+    const before = replay.diagnostics().processingRecovery.entriesVisited;
+    await replay.recoverStaleProcessing();
+    assert.ok(
+      replay.diagnostics().processingRecovery.entriesVisited - before <= 2,
+    );
+  }
+  assert.equal(replay.diagnostics().recoveredStaleProcessing, 7);
+  assert.equal(
+    await fs.readFile(conflict, "utf8"),
+    JSON.stringify({ distinctProcessing: true }),
+  );
+  assert.equal(
+    JSON.parse(
+      await fs.readFile(
+        path.join(directories.events, "conflict.event"),
+        "utf8",
+      ),
+    ).original,
+    true,
+  );
+});
+
+test("requeue preserves both files if another durable file exists", async (t) => {
+  const directories = await createWorkspace(t);
+  const replay = createReplay(directories, {
+    processEvent: async () => {
+      await writeEvent(directories.events, "conflict", { distinct: true });
+      return false;
+    },
+  });
+  await writeEvent(directories.events, "conflict", { original: true });
+  await replay.run();
+  const names = await fs.readdir(directories.events);
+  assert.equal(names.filter((name) => name.endsWith(".processing")).length, 1);
+  assert.equal(
+    JSON.parse(
+      await fs.readFile(
+        path.join(directories.events, "conflict.event"),
+        "utf8",
+      ),
+    ).distinct,
+    true,
+  );
+  assert.equal(
+    replay.diagnostics().lastError,
+    "stored-replay-requeue-conflict",
+  );
+});
+
+test("background maintenance starts without awaiting recovery and closes on shutdown", async (t) => {
+  const directories = await createWorkspace(t);
+  for (let i = 0; i < 8; i++) await writeEvent(directories.events, `${i}`);
+  const replay = createReplay(directories, {
+    processEvent: async () => true,
+    scanMaxEntries: 2,
+  });
+  replay.startBackgroundMaintenance();
+  replay.startBackgroundMaintenance(); // idempotent, not a second scanner loop
+  assert.equal(replay.snapshot().capturedAt, null);
+  await waitFor(() => replay.snapshot().entriesVisited >= 2);
+  await replay.close();
+  const snapshot = replay.snapshot();
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.deepEqual(replay.snapshot(), snapshot);
+  assert.equal(replay.diagnostics().active, false);
+  replay.startBackgroundMaintenance(); // closed scanners do not restart
+  await replay.run();
+  assert.equal(replay.diagnostics().successful, 0);
+});
+
+test("a permanently deferred batch does not repeatedly hide later eligible events", async (t) => {
+  const directories = await createWorkspace(t);
+  for (let i = 0; i < 10; i++)
+    await writeEvent(directories.events, `retry-${i}`, { retry: true });
+  await writeEvent(directories.events, "valid", { valid: true });
+  let succeeded = 0;
+  const replay = createReplay(directories, {
+    batchSize: 1,
+    scanMaxEntries: 2,
+    processEvent: async (event) => {
+      if ((event as { valid?: boolean }).valid) {
+        succeeded++;
+        return true;
+      }
+      return false;
+    },
+  });
+  for (let i = 0; i < 20 && !succeeded; i++) await replay.run();
+  assert.equal(succeeded, 1);
+  assert.ok(replay.diagnostics().requeued <= 10);
+});
+
+test("inventory distinguishes this replay's active writer from an unresolved processing file", async (t) => {
+  const directories = await createWorkspace(t);
+  const gate = deferred();
+  let started = false;
+  const replay = createReplay(directories, {
+    processEvent: async () => {
+      started = true;
+      await gate.promise;
+      return true;
+    },
+  });
+  await writeEvent(directories.events, "live-write");
+  const run = replay.run();
+  try {
+    await waitFor(() => started);
+    await fs.writeFile(
+      path.join(
+        directories.events,
+        `unknown.event.${process.pid}.1.processing`,
+      ),
+      "{}",
+    );
+    await replay.refreshQueueSnapshot();
+    assert.equal(replay.snapshot().processingFiles, 2);
+    assert.equal(replay.snapshot().unresolvedProcessingFiles, 1);
+  } finally {
+    gate.resolve();
+    await run;
+  }
 });
