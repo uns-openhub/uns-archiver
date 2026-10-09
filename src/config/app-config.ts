@@ -158,6 +158,19 @@ export interface ProjectAppConfig {
     } | undefined;
     /** Archiver runtime settings. */
     archiver?: {
+        /** Node-local allowlist of sealed legacy spool directories. Select by ID through the import API; never synchronize these host paths across controllers. Changes require archiver restart. */
+        legacySources?: {
+            id: string;
+            directory: string;
+        }[] | undefined;
+        /** Bounded legacy import settings, read at startup. Defaults: 128 events/pass, up to 64 writers (capped by live capacity), 1 MiB/file, 16 MiB/pass, 500 ms between passes. Source must be closed by its old writer before starting import. */
+        legacyImport?: {
+            batchSize?: number | undefined;
+            concurrency?: number | undefined;
+            maxFileBytes?: number | undefined;
+            maxBatchBytes?: number | undefined;
+            intervalMs?: number | undefined;
+        } | undefined;
         /** Max number of events kept in-memory while waiting for the controller/GraphQL active-topics registry (default 2000). Overflow is discarded because inactive topics are not eligible for history. */
         inactiveBufferMax?: number | undefined;
         /** Max age (ms) for buffered inactive-topic events before discarding them (default 300000 = 5min). */

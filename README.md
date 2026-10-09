@@ -123,7 +123,8 @@ This prevents every health poll or API caller from reopening a large directory.
 The current instance's PID locks and live PIDs remain protected during automatic
 recovery; PID reuse is not resolved by this change. Conflicting `.event` and
 `.processing` files are preserved for inspection rather than silently discarding
-one. This is not yet a legacy-directory import API or a handover drain hook.
+one. Legacy-directory import is described below; the MQTT handover drain hook
+remains a separate upgrade requirement.
 
 Authenticated `/control` status, pause and resume return immediately from cached
 inspection. Resume schedules replay without waiting for QuestDB to flush. Pause
@@ -167,6 +168,130 @@ host and production profiles use the measured 512-worker, 512-row batch
 combination. Existing controller instances retain their own copied config
 across releases, so review and update that instance config when upgrading
 from an older profile.
+
+### Import a sealed legacy spool after an upgrade
+
+The new instance continues MQTT capture into its own `event_storage`. Importing
+the old instance's queue is a **separate, explicitly started job**. It does not
+move the entire queue into the live spool or change `/control` semantics.
+
+Declare a small, **node-local** allowlist in the archiver configuration:
+
+```json
+{
+  "archiver": {
+    "legacySources": [
+      { "id": "retired-instance", "directory": "/srv/openhub/retired/archiver/event_storage" }
+    ],
+    "legacyImport": {
+      "batchSize": 128,
+      "concurrency": 64,
+      "maxFileBytes": 1048576,
+      "maxBatchBytes": 16777216,
+      "intervalMs": 500
+    }
+  }
+}
+```
+
+Source IDs are unique; paths must be absolute canonical directories without
+symlinks and cannot overlap the current live spool or another source. At most
+16 sources are allowed. This allowlist and the import limits are read at startup:
+restart the archiver after changing them. The service does not publish these
+physical paths over MQTT. Keep them out of portable/shared configuration
+templates: a controller that copies the entire RTT configuration can also copy
+these values. The source and job must remain on the same host during recovery.
+
+After the old MQTT/replay process has exited, use its preserved source ID:
+
+- `GET /<processName>/api/system/archiver/service/<processName>/imports` returns
+  cached source inspection, job counters, local ownership, quarantine presence,
+  measured drain rates and the oldest event time **seen**, not an exact oldest
+  queued event or ETA.
+- `GET .../imports?action=inspect&sourceId=retired-instance` schedules a background
+  inspection. Counts are `unknown`, `lower-bound`, or `observed`, with scan progress
+  and capture time; an unavailable directory is never an empty queue.
+- `POST .../import-control` accepts the following JSON body. Change `action` to
+  `pause`, `resume`, or `cancel` and use the current job revision for subsequent
+  commands. Start/resume require `confirmSourceClosed: true`.
+
+```json
+{
+  "action": "start",
+  "sourceId": "retired-instance",
+  "requestId": "import-request-001",
+  "expectedRevision": 0,
+  "confirmSourceClosed": true
+}
+```
+
+Both endpoints use the configured JWT/JWKS verification and token path grants.
+`/topics` also includes cached legacy import status. Configured unfinished recovery
+is published as a separate degraded dependency signal, so an empty new live spool
+does not hide an old backlog in the controller's service health. No configured
+legacy sources means this extra dependency signal is absent.
+The mutation endpoint has a separate path: permission to read `imports` does
+not permit `import-control`. API commands reject extra fields and arbitrary paths.
+The same most recent request ID and identical body are idempotent; changed reuse
+or a stale revision returns `409`. Revisions describe operator commands, while
+progress counters update independently.
+
+**Closure confirmation is an operator attestation**, not an automatic check of
+the old process or a handover receipt. Never start import while the old process
+can still write/replay the source. The source-local filesystem claim excludes
+other importers; it cannot fence a legacy binary that does not understand it.
+Ownership records use a random token and runtime instance identity. A dead owner
+can be reclaimed only on explicit start/resume on the same hostname, after a
+process liveness check. Live/reused PIDs and foreign-container owners block takeover
+and require local review; there is no API force-unlock. Incomplete/corrupt claim
+metadata also requires local review.
+
+Import cursors visit at most 512 entries per pass and check a 25 ms work budget;
+selected events and bytes are bounded separately. Default concurrency is capped
+at one eighth of live queue capacity. Live headroom is checked before each write
+chunk; a pending chunk may finish. Writer deferral backs off for at least five
+seconds and resumes scanning beyond that file. The existing QuestDB sender is
+shared with live ingestion. Pause acknowledges local state without waiting for a
+pending database write, but it does persist a small checkpoint. Cancel and normal
+shutdown wait for pending writes; they preserve unacknowledged files. Cancel does
+not roll back rows already written and permits a later explicit restart of the job.
+
+`.event` and recognized `.event.<pid>.<time>.processing` entries are read in place
+after source closure. A source file is unlinked only after a confirmed shared ILP
+flush or a known identical event already confirmed by this import runtime under
+the same storage policy. The cache is bounded and not durable. Original event
+time, data groups and supported 1.x/2.0 packet shapes are retained. Current active
+topic membership is **not** used to discard valid historical events. Import still
+requires a matching storage rule. Effective `window_replace` is deferred for
+review because historical replay must not soft-delete newer data. If optional
+identity enrichment cannot reach the controller, the persisted job start time
+bounds the retry grace period; it does not restart on each file read.
+
+Malformed/unsupported/oversized packets, unmatched storage and regular `.tmp` /
+`.updated` / unknown files are preserved under the source-local
+`.uns-archiver-import/quarantine/` with a reason. Symlinks, hard links and unexpected
+subdirectories remain untouched for review. Source contents, file names, paths,
+owner PIDs, payloads and credentials are not returned by the import API.
+
+Checkpoints and claims live in `.uns-archiver-import` inside the old source, using
+atomic writes and filesystem sync, without a PostgreSQL registry or a per-event
+database ledger. A fresh non-mutating verification traversal is required before
+completion. Preserved quarantine prevents `completed`, even if a crash lost the
+last counter update. After restart, jobs require explicit resume; traversal starts
+again in bounded background passes. Interrupted DB acknowledgements may produce
+duplicates, and counters can lag an interrupted batch. This is not exactly-once
+delivery. A filesystem read in progress cannot be forcibly cancelled, so the
+25 ms budget is not a hard IO deadline.
+
+Do not uninstall the old version or remove its source volume until import has
+finished and preserved files have been reviewed. Controller UI integration,
+automatic handover receipt verification, migration/uninstall guards and a real
+Runtime/QuestDB upgrade drill remain separate acceptance work.
+
+For a neutral local file test with the real importer and QuestDB writer but a
+synthetic sender, run `node --import ./node_modules/tsx/dist/loader.mjs
+scripts/inspect-legacy-import.mts 20000`. It creates and deletes only its own
+temporary fixture. Its results are not a production database throughput estimate.
 
 ## Configuration
 

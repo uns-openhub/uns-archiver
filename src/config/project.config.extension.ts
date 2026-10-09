@@ -17,6 +17,19 @@ const questDbUrlSchema = z.union([
 export const projectExtrasSchema = z.object({
   archiver: z
     .object({
+      legacySources: z.array(z.object({
+        id: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9-]{0,63}$/),
+        directory: z.string().startsWith("/"),
+      })).max(16).optional().describe(
+        "Node-local allowlist of sealed legacy spool directories. Select by ID through the import API; never synchronize these host paths across controllers. Changes require archiver restart.",
+      ),
+      legacyImport: z.object({
+        batchSize: z.number().int().min(1).max(512).optional(),
+        concurrency: z.number().int().min(1).max(128).optional(),
+        maxFileBytes: z.number().int().min(1).max(16777216).optional(),
+        maxBatchBytes: z.number().int().min(1).max(67108864).optional(),
+        intervalMs: z.number().int().min(100).max(60000).optional(),
+      }).optional().describe("Bounded legacy import settings, read at startup. Defaults: 128 events/pass, up to 64 writers (capped by live capacity), 1 MiB/file, 16 MiB/pass, 500 ms between passes. Source must be closed by its old writer before starting import."),
       inactiveBufferMax: z
         .number()
         .int()

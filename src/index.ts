@@ -37,6 +37,10 @@ import { storedReplayControlStatus } from "./stored-replay-control.js";
 import { drainArchiverForShutdown } from "./archiver-shutdown.js";
 import { resolveEventDeduplicationDisposition } from "./event-deduplication.js";
 import { StoredEventReplay } from "./stored-event-replay.js";
+import { LegacyImportManager, type LegacySource, type LegacyImportSettings } from "./legacy-import.js";
+import { legacyImportApi, importCommandSchema } from "./legacy-import-api.js";
+import { assessLegacyImportHealth } from "./legacy-import-health.js";
+import { writeLegacyEvent, type LegacyEvent, type LegacyWriteResult } from "./legacy-import-writer.js";
 import { assessIngestHealth, type IngestHealth } from "./ingest-health.js";
 import { ArchiverEntityBindingClient } from "./entity-binding-client.js";
 import {
@@ -187,6 +191,8 @@ const mqttPublishCircuit = new CircuitBreaker("mqtt-mapping-publish", {
 });
 
 type ArchiverRuntimeConfig = {
+  legacySources?: LegacySource[];
+  legacyImport?: LegacyImportSettings;
   inactiveBufferMax?: number;
   inactiveBufferMaxAgeMs?: number;
   ingestQueueMaxEvents?: number;
@@ -432,6 +438,66 @@ const storedReplay = new StoredEventReplay({
   onError: (message) => logger.warn(`Stored event replay: ${message}.`),
 });
 
+// Physical source paths are startup-only and are not part of portable MQTT state.
+const legacyRuntimeSettings = (config as any).archiver as ArchiverRuntimeConfig | undefined;
+const legacyConfirmedEventIds = new Set<string>();
+const legacyStoragePolicyDigest = () => createHash("sha256").update(JSON.stringify({
+  storage: config.questdb.dataStorage, identityEnrichmentEnabled,
+})).digest("hex");
+await ensureEventStorageDirectories();
+const legacyImports = new LegacyImportManager({
+  sources: legacyRuntimeSettings?.legacySources ?? [],
+  settings: { ...legacyRuntimeSettings?.legacyImport,
+    concurrency: Math.min(legacyRuntimeSettings?.legacyImport?.concurrency ?? 64,
+      Math.max(1, Math.floor(ingestQueueMaxEvents / 8))) },
+  liveDirectory: EVENT_STORAGE_DIR,
+  instanceId: `${config.uns.processName}:${process.env.UNS_CONTROLLER_NAME ?? "standalone"}:${path.resolve(".")}`,
+  policyDigest: legacyStoragePolicyDigest,
+  canWrite: () => !shuttingDown && latestQuestDbHealth?.healthy !== false,
+  hasLiveHeadroom: () => hasStoredReplayLiveHeadroom(ingestQueue?.snapshot(), ingestQueueMaxEvents, ingestQueueMaxBytes),
+  write: writeLegacyPacket,
+});
+legacyImports.startBackground();
+const importApi = legacyImportApi(legacyImports);
+
+async function writeLegacyPacket(event: LegacyEvent, context: { startedAt: string }): Promise<LegacyWriteResult> {
+  const mqttEvent = event as ArchiverMqttEvent;
+  const eventId = generateEventId(mqttEvent);
+  const confirmationId = `${legacyStoragePolicyDigest()}:${eventId}`;
+  if (legacyConfirmedEventIds.has(confirmationId)) return { outcome: "duplicate" };
+  if (inflightEventIds.has(eventId)) return { outcome: "deferred", reason: "event-inflight" };
+  inflightEventIds.add(eventId);
+  try {
+    const result = await writeLegacyEvent(event, {
+      findStorage: topic => TopicMatcher.findStorage(config, topic),
+      getMode: packet => resolveIngestMode(TopicMatcher.findStorage(config, event.topic), packet),
+      write: async packet => {
+        const storage = TopicMatcher.findStorage(config, event.topic)!;
+        const mode = resolveIngestMode(storage, packet);
+        if (!mqttEvent._archiverIdentity) {
+          const eventTime = resolvePacketEventTime(packet);
+          if (eventTime) mqttEvent._archiverIdentity = { schemaVersion: 1, status: "retry",
+            topic: event.topic, eventTime, firstAttemptAt: context.startedAt };
+        }
+        const identity = await resolveEntityIdentityForWrite(mqttEvent, event.topic, packet);
+        if (identity.retry) throw new Error("Identity retry pending");
+        // Historical validity does not depend on the current active-topic set.
+        await questDbWriter.writeUnsPacket(packet, storage.tablePrefix, event.topic,
+          topicMetadata[event.topic] ?? topicMetadata[sanitizeTopicName(event.topic)],
+          mode, identity.evidence ?? undefined);
+      },
+    });
+    if (result.outcome === "written") {
+      legacyConfirmedEventIds.add(confirmationId);
+      if (legacyConfirmedEventIds.size > PROCESSED_EVENTS_CACHE_SIZE) {
+        const oldest = legacyConfirmedEventIds.values().next();
+        if (!oldest.done) legacyConfirmedEventIds.delete(oldest.value);
+      }
+    }
+    return result;
+  } finally { inflightEventIds.delete(eventId); }
+}
+
 async function refreshQuestDbHealth(): Promise<QuestDbDependencyHealth> {
   latestQuestDbHealth = await questDbWriter.checkHealth();
   return latestQuestDbHealth;
@@ -448,6 +514,7 @@ async function publishArchiverServiceMetadata() {
     inspection,
   );
   latestIngestHealth = ingestHealth;
+  const legacyImportHealth = assessLegacyImportHealth(legacyImports.status());
   if (previousIngestHealthy !== ingestHealth.healthy) {
     logger.info(`Archive ingest health is ${ingestHealth.state}${ingestHealth.message ? `: ${ingestHealth.message}` : "."}`);
   }
@@ -467,9 +534,10 @@ async function publishArchiverServiceMetadata() {
         }
       : {}),
     extra: {
-      dependencies: [health, ingestHealth],
+      dependencies: [health, ingestHealth, ...(legacyImportHealth ? [legacyImportHealth] : [])],
       questdbHealth: health,
       ingestHealth,
+      ...(legacyImportHealth ? { legacyImportHealth } : {}),
     },
   });
 }
@@ -943,6 +1011,18 @@ async function setupApiProxy() {
         },
         handler: () => undefined,
       },
+      imports: {
+        topic: CONTROL_TOPIC, asset: CONTROL_ASSET, objectType: CONTROL_OBJECT_TYPE,
+        objectId: CONTROL_OBJECT_ID, attribute: "imports", method: "GET",
+        description: "Cached legacy import status. action=inspect&sourceId=<configured-id> schedules a bounded background inspection.",
+        tags: ["archiver", "legacy-import"], handler: () => undefined,
+      },
+      importControl: {
+        topic: CONTROL_TOPIC, asset: CONTROL_ASSET, objectType: CONTROL_OBJECT_TYPE,
+        objectId: CONTROL_OBJECT_ID, attribute: "import-control", method: "POST",
+        description: "Legacy import only: start, pause, resume, cancel. JSON body: action, sourceId, requestId, expectedRevision, confirmSourceClosed. Start/resume require explicit confirmation that old MQTT/replay writer has exited. No arbitrary path accepted.",
+        tags: ["archiver", "legacy-import"], handler: () => undefined,
+      },
     });
     await apiProxy.get(
       CONTROL_TOPIC,
@@ -963,13 +1043,20 @@ async function setupApiProxy() {
 
     await publishArchiverServiceMetadata();
 
+    await apiProxy.get(CONTROL_TOPIC, CONTROL_ASSET, CONTROL_OBJECT_TYPE, CONTROL_OBJECT_ID,
+      "imports", serviceApiInteractions.imports.options);
+    await apiProxy.post(CONTROL_TOPIC, CONTROL_ASSET, CONTROL_OBJECT_TYPE, CONTROL_OBJECT_ID,
+      "import-control", { ...serviceApiInteractions.importControl.options,
+        requestBody: { required: true, description: "Legacy import command", schema: importCommandSchema } });
+
     apiProxy.event.on("apiGetEvent", handleApiGetEvent);
+    apiProxy.event.on("apiPostEvent", handleImportPostEvent);
     apiProxy.event.on("error", (err: any) => {
       const reason = err instanceof Error ? err.message : String(err);
       logger.error(`API proxy error: ${reason}, scheduling restart...`);
       scheduleApiProxyRestart();
     });
-    logger.info("Archiver control API ready (pause/resume/status).");
+    logger.info("Archiver control and legacy import APIs ready.");
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     logger.error(`Failed to start archiver control API: ${reason}`);
@@ -1010,6 +1097,10 @@ async function handleApiGetEvent(event: any) {
   const path = event?.req?.path ?? "";
   const action = (event?.req?.query?.action as string | undefined)?.toLowerCase();
   try {
+    if (path.endsWith("/imports")) {
+      importApi.get(event);
+      return;
+    }
     if (path.endsWith("/control")) {
       event.res.json(storedControlStatus(action));
       return;
@@ -1021,6 +1112,7 @@ async function handleApiGetEvent(event: any) {
         topicMetadataCount: Object.keys(topicMetadata ?? {}).length,
         ...queueStatus,
         storedReplay: storedReplay.diagnostics(),
+        legacyImports: legacyImports.status(),
         questDbBatch: questDbWriter.getBatchDiagnostics(),
         ingestQueue: ingestQueue?.snapshot(),
         processedEventIdsSize: processedEventIds.size,
@@ -1039,6 +1131,13 @@ async function handleApiGetEvent(event: any) {
     const reason = err instanceof Error ? err.message : String(err);
     event.res.status(500).json({ error: reason });
   }
+}
+
+async function handleImportPostEvent(event: any) {
+  if (!event?.req?.path?.endsWith("/import-control")) {
+    event.res.status(404).json({ error: "unknown-import-endpoint" }); return;
+  }
+  await importApi.post(event);
 }
 
 /**
@@ -1629,7 +1728,7 @@ async function cleanup() {
         await ingestQueue.waitForIdle();
       },
       waitForStoredReplay: async () => {
-        await storedReplay.close();
+        await Promise.all([storedReplay.close(), legacyImports.close()]);
       },
       closeQuestDb: async () => {
         await questDbWriter.close();
