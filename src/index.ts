@@ -34,7 +34,7 @@ import { CircuitBreaker, errorMessage, isRetryableNetworkError, withRetry } from
 import { canonicalizeTopics, subscriptionDelta } from "./subscription-state.js";
 import { BoundedIngestQueue } from "./bounded-ingest-queue.js";
 import { storedReplayControlStatus } from "./stored-replay-control.js";
-import { drainArchiverForShutdown } from "./archiver-shutdown.js";
+import { createArchiverShutdown } from "./archiver-shutdown.js";
 import { resolveEventDeduplicationDisposition } from "./event-deduplication.js";
 import { StoredEventReplay } from "./stored-event-replay.js";
 import { LegacyImportManager, type LegacySource, type LegacyImportSettings } from "./legacy-import.js";
@@ -176,7 +176,7 @@ let lastTopicsRefreshAt: number | null = null;
 let activeTopicsReady = false;
 let activeTopicsAuthoritative = false;
 let shuttingDown = false;
-let cleanupPromise: Promise<void> | null = null;
+let inputProcess: UnsProxyProcess | undefined;
 let latestQuestDbHealth: QuestDbDependencyHealth | null = null;
 let latestIngestHealth: IngestHealth | null = null;
 let serviceMetadataPublisher: UnsProxyProcessWithApi | undefined;
@@ -457,6 +457,32 @@ const legacyImports = new LegacyImportManager({
   hasLiveHeadroom: () => hasStoredReplayLiveHeadroom(ingestQueue?.snapshot(), ingestQueueMaxEvents, ingestQueueMaxBytes),
   write: writeLegacyPacket,
 });
+const archiverShutdown = createArchiverShutdown(
+  () => { shuttingDown = true; },
+  {
+    stopMqtt: async () => {
+      if (inputProcess) await inputProcess.shutdown();
+      else if (mqttInput) await mqttInput.stop();
+    },
+    waitForLiveIngest: async () => {
+      if (!ingestQueue) return;
+      const { pendingEvents, spillingEvents } = ingestQueue.snapshot();
+      if (pendingEvents > 0 || spillingEvents > 0) {
+        logger.info(
+          `Waiting for ${pendingEvents} queued ingest event(s) and ${spillingEvents} durable spill(s) before shutdown.`,
+        );
+      }
+      await ingestQueue.waitForIdle();
+    },
+    waitForStoredReplay: async () => {
+      await Promise.all([storedReplay.close(), legacyImports.close()]);
+    },
+    closeQuestDb: async () => {
+      await questDbWriter.close();
+    },
+  },
+);
+
 legacyImports.startBackground();
 const importApi = legacyImportApi(legacyImports);
 
@@ -1146,6 +1172,7 @@ async function handleImportPostEvent(event: any) {
  * @param topics - The list of topics to subscribe to
  */
 async function subscribeToTopics(topics: string[]) {
+  if (shuttingDown) return;
   // Topic filters
   const ds = config.questdb.dataStorage;
   const topicFilters: string[] = ds.map((item) => item.topic);
@@ -1186,7 +1213,13 @@ async function subscribeToTopics(topics: string[]) {
     const unsProxyProcess = new UnsProxyProcess(infraChannel.host, {
       processName: config.uns.processName,
       ...mqttChannelParameters(infraChannel),
+      handoverShutdown: {
+        onRelease: archiverShutdown.release,
+        drain: archiverShutdown.drain,
+        timeoutMs: 30_000,
+      },
     });
+    inputProcess = unsProxyProcess;
     mqttInput = await unsProxyProcess.createUnsMqttProxy(
       inputChannel.host,
       "unsArchiverInput",
@@ -1711,33 +1744,8 @@ function saveEventToFileSync(mqttEvent: any, eventId: string): void {
  * Cleans up resources before exiting the application.
  */
 async function cleanup() {
-  if (!cleanupPromise) {
-    shuttingDown = true;
-    cleanupPromise = drainArchiverForShutdown({
-      stopMqtt: async () => {
-        if (mqttInput) await mqttInput.stop();
-      },
-      waitForLiveIngest: async () => {
-        if (!ingestQueue) return;
-        const { pendingEvents, spillingEvents } = ingestQueue.snapshot();
-        if (pendingEvents > 0 || spillingEvents > 0) {
-          logger.info(
-            `Waiting for ${pendingEvents} queued ingest event(s) and ${spillingEvents} durable spill(s) before shutdown.`,
-          );
-        }
-        await ingestQueue.waitForIdle();
-      },
-      waitForStoredReplay: async () => {
-        await Promise.all([storedReplay.close(), legacyImports.close()]);
-      },
-      closeQuestDb: async () => {
-        await questDbWriter.close();
-      },
-    });
-  }
-
   try {
-    await cleanupPromise;
+    await archiverShutdown.drain();
     logger.warn("Cleanup completed. Exiting application.");
     process.exit(0);
   } catch (error) {

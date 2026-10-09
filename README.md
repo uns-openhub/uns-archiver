@@ -123,8 +123,8 @@ This prevents every health poll or API caller from reopening a large directory.
 The current instance's PID locks and live PIDs remain protected during automatic
 recovery; PID reuse is not resolved by this change. Conflicting `.event` and
 `.processing` files are preserved for inspection rather than silently discarding
-one. Legacy-directory import is described below; the MQTT handover drain hook
-remains a separate upgrade requirement.
+one. Legacy-directory import and the candidate MQTT handover drain hook are
+described below; the hook requires the new SDK and separate release acceptance.
 
 Authenticated `/control` status, pause and resume return immediately from cached
 inspection. Resume schedules replay without waiting for QuestDB to flush. Pause
@@ -375,3 +375,27 @@ vulnerabilities.
 ## License
 
 [MIT](./LICENSE) © Aljoša Vister.
+
+### Application drain during handover (unreleased candidate)
+
+The candidate requires `@uns-kit/core` 3.0.23 and registers its
+`handoverShutdown` hook before starting the input proxy. Once an active source
+accepts a handover, it stops starting new replay writes and subscription updates.
+Already accepted live work continues. After the target acknowledges MQTT
+ownership, the source awaits input proxy shutdown, live ingestion/durable spills,
+current replay and legacy-import checkpoints, then closes the shared QuestDB
+writer. SIGINT/SIGTERM use the same idempotent drain.
+
+The deadline after acknowledgement is 30 seconds. Failure or timeout exits with
+status 1 and an incomplete-drain diagnostic; successful drain exits with 0.
+Persisted unacknowledged import files remain recoverable and restart requires
+reviewed resume. Timeout can interrupt accepted in-memory live work and cannot
+prove that a database write was cancelled. Delivery is not exactly once.
+Review supervisor restart behavior before rollout: a failed old instance must
+not automatically restart and reclaim ownership while the new one is active.
+
+This hook is not retroactive: an older source binary still uses its installed
+SDK's exit behavior. MQTT `handover_fin`/`handover_ack` are ownership-transfer
+messages, not application-drain receipts. Confirm actual old-process exit before
+starting legacy import. Real broker/QuestDB/Runtime upgrade acceptance remains
+separate from the candidate's subprocess recovery tests.
