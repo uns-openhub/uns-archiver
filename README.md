@@ -312,6 +312,24 @@ synthetic sender, run `node --import ./node_modules/tsx/dist/loader.mjs
 scripts/inspect-legacy-import.mts 20000`. It creates and deletes only its own
 temporary fixture. Its results are not a production database throughput estimate.
 
+For opt-in acceptance against a **disposable local QuestDB at 127.0.0.1:9000**:
+
+```sh
+pnpm -s exec tsx scripts/accept-real-questdb-import.mts 20000 /tmp/import-20000.json
+# Bounded larger fixture, maximum 100,000 files:
+pnpm -s exec tsx scripts/accept-real-questdb-import.mts 100000 /tmp/import-100000.json
+```
+
+The runner uses the production importer and writer with real HTTP ILP, a local
+fault proxy, a randomly named fixture table with the existing `time` column
+contract, and synthetic `.event` / abandoned `.processing` files. It checks pause
+during a slow flush, rejected database writes, explicit resume after restart,
+and every final database row's identity and original timestamp. ILP acknowledgement
+and query visibility are measured separately. Status timings cover the cached
+helper, not an authenticated API or browser. It removes its own table/files;
+it does not exercise MQTT handover or the full 5.2.17 upgrade and must not be
+reported as production throughput or exactly-once delivery.
+
 ## Configuration
 
 The complete configuration contract is documented in

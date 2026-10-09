@@ -1,0 +1,200 @@
+{
+  "date": "2026-10-09",
+  "phase": "P4a",
+  "archiverCandidate": {
+    "commit": "5efced6",
+    "version": "5.2.20",
+    "kit": "3.0.23"
+  },
+  "controller": {
+    "commit": "c694570",
+    "version": "2.1.144",
+    "count": 1,
+    "localAdminLogin": "PASS",
+    "directHealthHttp": 200,
+    "publicCaddyHealthHttp": 200,
+    "uiHtmlHttp": 200,
+    "browserWorkflowAcceptance": false
+  },
+  "environment": {
+    "hostArch": "arm64",
+    "hostMemoryBytes": 17179869184,
+    "node": "24.11.0",
+    "podmanMachineMemoryBytes": 3789565952,
+    "podmanMachineCpus": 5,
+    "composeProject": "openhub-p4-20261009",
+    "mode": "infra",
+    "questdbImageDigest": "sha256:104242d1680062a7631d3347557ff4c35f60e5569684f42155ac37c05e5b1da6",
+    "postgresImageDigest": "sha256:a60d3d51607739705369c619c7197b42c1d994d65b25055d4ea00c64c90e2b92",
+    "postgresImageTag": "2.1.136",
+    "freshLocalVolumes": true
+  },
+  "oldArchiverPrepared": {
+    "version": "5.2.17",
+    "tagCommit": "ce8dcfc57c2b10b742f0381d2b0c688e7ed2d1d0",
+    "frozenLockInstall": "PASS",
+    "core": "3.0.16",
+    "build": "PASS",
+    "liveUpgradeAccepted": false
+  },
+  "runner": {
+    "path": "scripts/accept-real-questdb-import.mts",
+    "finalSha256": "c1acbc2d426d76e80f83b1e8d3b27366e00e60cc4efb5d93b9a1a2fc3e04005b",
+    "typecheck": "PASS",
+    "final20kRepeatedAfterTempPathPortabilityChange": true
+  },
+  "runs": [
+    {
+      "scope": "real-QuestDB-HTTP-ILP-and-production-importer-modules",
+      "excludes": [
+        "full-runtime-API",
+        "MQTT-handover",
+        "5.2.17-upgrade",
+        "production-scale"
+      ],
+      "eventCount": 20000,
+      "table": "p4_import_160e592cc0024118ad5de056c9ca5f5c_data",
+      "tableProvisioning": "explicit-existing-time-column-contract",
+      "pauseDuringSlowFlushMs": 7.91470900000013,
+      "slowFlush": {
+        "acknowledgedFiles": 64,
+        "immediateRows": 0,
+        "visibleRows": 64,
+        "readVisibilityDelayMs": 104.7037499999999
+      },
+      "outage": {
+        "durationMs": 4217.4352499999995,
+        "failedRequests": 21,
+        "deferred": 64,
+        "acknowledgedFilesUnchanged": true
+      },
+      "restartRemainedPaused": true,
+      "result": "PASS",
+      "elapsedRecoveryImportMs": 41376.220667,
+      "verifiedRows": 20000,
+      "timestampMismatches": 0,
+      "duplicateRows": 0,
+      "residualSourceEvents": 0,
+      "importer": {
+        "id": "69723464-23fe-42a9-a7fb-140d2b0e9a9e",
+        "sourceId": "old",
+        "revision": 5,
+        "state": "completed",
+        "written": 20000,
+        "duplicate": 0,
+        "quarantined": 0,
+        "deferred": 64,
+        "bytesRead": 3279353,
+        "entriesVisited": 20065,
+        "rowsWritten": 20000,
+        "oldestEventTimeSeen": "2026-07-19T12:00:00.000Z",
+        "inFlight": 0,
+        "startedAt": "2026-10-09T20:11:31.379Z",
+        "updatedAt": "2026-10-09T20:12:17.433Z",
+        "lastError": null
+      },
+      "writer": {
+        "queuedRows": 0,
+        "flushingRows": 0,
+        "successfulFlushes": 313,
+        "failedFlushes": 1,
+        "retriedFlushes": 2,
+        "rejectedRows": 64,
+        "maxBatchRowsObserved": 64,
+        "lastBatchRows": 32,
+        "lastFlushDurationMs": 5,
+        "lastFlushAt": "2026-10-09T20:12:17.429Z",
+        "lastFailureAt": "2026-10-09T20:11:36.134Z",
+        "lastFailure": null,
+        "config": {
+          "flushIntervalMs": 20,
+          "maxRows": 64,
+          "maxPendingRows": 256
+        }
+      },
+      "maximumRssBytes": 158121984,
+      "eventLoopDelayMaxMs": 12.877823,
+      "statusHelperSamples": 4294,
+      "statusHelperP99Ms": 0.12333299999954761
+    },
+    {
+      "scope": "real-QuestDB-HTTP-ILP-and-production-importer-modules",
+      "excludes": [
+        "full-runtime-API",
+        "MQTT-handover",
+        "5.2.17-upgrade",
+        "production-scale"
+      ],
+      "eventCount": 100000,
+      "table": "p4_import_e675dd6fd1904055bf08dde76aaa4ee7_data",
+      "tableProvisioning": "explicit-existing-time-column-contract",
+      "pauseDuringSlowFlushMs": 6.975167000000511,
+      "slowFlush": {
+        "acknowledgedFiles": 64,
+        "immediateRows": 0,
+        "visibleRows": 64,
+        "readVisibilityDelayMs": 103.97508300000027
+      },
+      "outage": {
+        "durationMs": 4264.8403339999995,
+        "failedRequests": 21,
+        "deferred": 64,
+        "acknowledgedFilesUnchanged": true
+      },
+      "restartRemainedPaused": true,
+      "result": "PASS",
+      "elapsedRecoveryImportMs": 210177.34308299999,
+      "verifiedRows": 100000,
+      "timestampMismatches": 0,
+      "duplicateRows": 0,
+      "residualSourceEvents": 0,
+      "importer": {
+        "id": "e3998540-0d60-4e29-a7e5-cc7eaa0dec4b",
+        "sourceId": "old",
+        "revision": 5,
+        "state": "completed",
+        "written": 100000,
+        "duplicate": 0,
+        "quarantined": 0,
+        "deferred": 64,
+        "bytesRead": 16399375,
+        "entriesVisited": 100065,
+        "rowsWritten": 100000,
+        "oldestEventTimeSeen": "2026-07-19T12:00:00.000Z",
+        "inFlight": 0,
+        "startedAt": "2026-10-09T20:07:37.222Z",
+        "updatedAt": "2026-10-09T20:11:12.037Z",
+        "lastError": null
+      },
+      "writer": {
+        "queuedRows": 0,
+        "flushingRows": 0,
+        "successfulFlushes": 1563,
+        "failedFlushes": 1,
+        "retriedFlushes": 2,
+        "rejectedRows": 64,
+        "maxBatchRowsObserved": 64,
+        "lastBatchRows": 32,
+        "lastFlushDurationMs": 4,
+        "lastFlushAt": "2026-10-09T20:11:12.032Z",
+        "lastFailureAt": "2026-10-09T20:07:42.004Z",
+        "lastFailure": null,
+        "config": {
+          "flushIntervalMs": 20,
+          "maxRows": 64,
+          "maxPendingRows": 256
+        }
+      },
+      "maximumRssBytes": 212353024,
+      "eventLoopDelayMaxMs": 29.949951,
+      "statusHelperSamples": 20053,
+      "statusHelperP99Ms": 0.12095899999985704
+    }
+  ],
+  "remaining": [
+    "P2 authenticated API Global caller/request/query acceptance",
+    "P4b actual 5.2.17 MQTT handover and runtime/UI legacy import",
+    "full application autonomous shutdown and reviewed restoration",
+    "production volume/tooling retention and scale preflight"
+  ]
+}
