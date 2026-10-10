@@ -163,12 +163,14 @@ export interface ProjectAppConfig {
             id: string;
             directory: string;
         }[] | undefined;
-        /** Bounded legacy import settings, read at startup. Defaults: 128 events/pass, up to 64 writers (capped by live capacity), 1 MiB/file, 16 MiB/pass, 500 ms between passes. Source must be closed by its old writer before starting import. */
+        /** Bounded legacy import settings, read at startup. Defaults: 256 events/pass, up to 64 writers (capped at one eighth of live event capacity), 1 MiB/file, 16 MiB/pass, 100 ms between passes. Source must be closed by its old writer before starting import. */
         legacyImport?: {
             batchSize?: number | undefined;
+            /** Requested legacy writers (default 64). Runtime caps this at floor(ingestQueueMaxEvents / 8), minimum 1. Requesting 128 requires at least 1024 live event capacity; effective limits are reported by import status. */
             concurrency?: number | undefined;
             maxFileBytes?: number | undefined;
             maxBatchBytes?: number | undefined;
+            /** Healthy-pass pacing (default 100 ms). Explicit 10 ms is opt-in for measured local capacity; failure backoff, queue limits and ACK checks remain unchanged. */
             intervalMs?: number | undefined;
         } | undefined;
         /** Max number of events kept in-memory while waiting for the controller/GraphQL active-topics registry (default 2000). Overflow is discarded because inactive topics are not eligible for history. */

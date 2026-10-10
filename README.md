@@ -181,7 +181,10 @@ local allowlist:
 
 ```json
 [
-  { "id": "retired-instance", "directory": "/srv/openhub/retired/archiver/event_storage" }
+  {
+    "id": "retired-instance",
+    "directory": "/srv/openhub/retired/archiver/event_storage"
+  }
 ]
 ```
 
@@ -198,14 +201,17 @@ its local startup configuration:
 {
   "archiver": {
     "legacySources": [
-      { "id": "retired-instance", "directory": "/srv/openhub/retired/archiver/event_storage" }
+      {
+        "id": "retired-instance",
+        "directory": "/srv/openhub/retired/archiver/event_storage"
+      }
     ],
     "legacyImport": {
-      "batchSize": 128,
+      "batchSize": 256,
       "concurrency": 64,
       "maxFileBytes": 1048576,
       "maxBatchBytes": 16777216,
-      "intervalMs": 500
+      "intervalMs": 100
     }
   }
 }
@@ -288,8 +294,9 @@ bounds the retry grace period; it does not restart on each file read.
 
 Malformed/unsupported/oversized packets, unmatched storage and regular `.tmp` /
 `.updated` / unknown files are preserved under the source-local
-`.uns-archiver-import/quarantine/` with a reason. Symlinks, hard links and unexpected
-subdirectories remain untouched for review. Source contents, file names, paths,
+`.uns-archiver-import/quarantine/` with a reason. An unchanged real empty `failed/` directory created by old archivers is
+tolerated without deletion. Nonempty or linked `failed/`, symlinks, hard links
+and unexpected subdirectories remain untouched for review. Source contents, file names, paths,
 owner PIDs, payloads and credentials are not returned by the import API.
 
 Checkpoints and claims live in `.uns-archiver-import` inside the old source, using
@@ -447,3 +454,145 @@ commands; released runtimes reject import control. Scripts may still use the
 original array status and command contract. `expectedRevision` and `requestId`
 remain required. Source closure remains an operator review, not a historical
 MQTT acknowledgement. No source path or credential is returned in this status.
+
+### Large directory acceptance and limits
+
+The [local handover/import drill](docs/archiver-handover-import-acceptance.md)
+uses actual 5.2.17 and candidate runtimes, real MQTT/QuestDB, authenticated
+API/UI controls and an independent timestamp/ID oracle. Production upgrade
+and 50-million-real-file acceptance remain open.
+
+For scanner-only algorithm bounds, run:
+
+```sh
+node --import ./node_modules/tsx/dist/loader.mjs scripts/accept-large-directory-scan.mts 50000000 /tmp/scanner-50m.json
+```
+
+This generates names lazily, without physical files or database writes. Its
+runtime cannot estimate physical spool import duration. A 25 ms scan budget
+is cooperative; an individual disk operation may take longer.
+
+### Bounded legacy import throughput
+
+Legacy writes request a 25 ms maximum queue wait for their shared partial ILP
+batch. The normal live `questdb.batch` configuration remains in effect, and the
+hint only shortens a deadline: a slow in-flight flush can still delay the next
+one. Row promises resolve after a real flush acknowledgement, not after the
+timer fires. Default legacy pass spacing is 100 ms; explicit startup settings
+remain authoritative. File/byte/concurrency bounds, live headroom and all source
+ownership/checkpoint checks remain active.
+
+Import status includes bounded runtime-only `performance` aggregates for scan,
+read/parse, write/ACK, finalization and checkpoints. Concurrent per-file durations
+overlap and cannot be summed into wall time. Writer diagnostics include
+enqueue-to-batch-selection `queueWait` and `totalFlushDurationMs`; these do not
+measure database WAL apply delay. Metrics reset on restart and contain no source
+paths or payloads. Persisted job counters remain the import progress authority.
+
+The [throughput acceptance](docs/archiver-import-throughput-acceptance.md) records
+local comparison and limitations. Reproduce against disposable local QuestDB:
+
+```sh
+node --import ./node_modules/tsx/dist/loader.mjs scripts/compare-legacy-import-throughput.mts 4096 baseline /tmp/import-baseline.json
+node --import ./node_modules/tsx/dist/loader.mjs scripts/compare-legacy-import-throughput.mts 4096 bounded-fast /tmp/import-fast.json
+node --import ./node_modules/tsx/dist/loader.mjs scripts/accept-real-questdb-import.mts 2000 /tmp/import-faults.json import-hint
+```
+
+These runners create/drop only their own synthetic tables and temporary spools
+on `127.0.0.1:9000`; they do not accept a production address. Normal live batching
+and the existing stored-event replay path receive no new wait hint.
+
+### Preparation during a legacy write
+
+The importer prepares at most one following writer chunk while the current
+chunk waits for its database acknowledgement. Both chunks belong to the same
+bounded source pass: at most `min(batchSize, 2 * concurrency)` resident envelopes,
+and their combined original file sizes stay within `maxBatchBytes`. This limits
+source payload admission, not total Node RSS: decoded JSON, read buffers, the
+writer queue and the SDK also consume memory. No whole-directory list is loaded.
+
+Preparation does not accept an event into the writer. Pause, shutdown, lost live
+headroom or database unavailability stop new writes; prepared files remain on
+disk and are read again after reviewed resume. File identity and storage policy
+are rechecked before writing, and source ownership is rechecked for each chunk
+and after ACK before removing a file. Already accepted writes can finish during
+pause/shutdown. Neither prefetch nor a successful HTTP response promises exactly
+once delivery after a crash.
+
+`performance.pipeline` reports bounded runtime aggregates: `readAheadChunks` and
+maximum admitted file count/combined source size for the current and following
+chunk. These are conservative admission bounds, not a heap measurement. Metrics
+reset on restart and contain no file names, paths or contents.
+
+See [pipeline acceptance](docs/archiver-import-pipeline-acceptance.md). On the
+measured local disk, the gain over the previous fast importer was below 2%; the
+pipeline should not be presented as another large throughput improvement.
+Run slow-ACK, outage, pause and restart acceptance with actual read-ahead:
+
+```sh
+node --import ./node_modules/tsx/dist/loader.mjs scripts/accept-real-questdb-import.mts 2000 /tmp/import-pipeline-faults.json import-hint pipeline
+```
+
+### Sizing a legacy import
+
+Default import passes now select up to **256 files**, with 64 writers, 16 MiB
+combined source size and 100-ms spacing. Explicit `batchSize` and `intervalMs`
+settings are preserved. Reading ahead still retains only the current and next
+writer chunk. Larger passes reduce scheduling/checkpoint overhead; they do not
+increase default live queue size or writer concurrency.
+
+Import status includes `settings`, the effective startup limits. Requested
+concurrency is capped at `max(1, floor(ingestQueueMaxEvents / 8))`; for example,
+requesting 128 with the default 512-event live capacity still yields 64. These
+limits reset only on restart, and changing startup config requires restart.
+
+An **opt-in** measured profile uses 256 files/pass and 128 writers:
+
+```json
+{
+  "archiver": {
+    "ingestQueueMaxEvents": 1024,
+    "legacyImport": { "batchSize": 256, "concurrency": 128, "intervalMs": 100 }
+  }
+}
+```
+
+The larger live event capacity allows the existing one-eighth concurrency cap;
+it also raises the potential live event count in memory. The live payload byte
+limit and legacy byte limit remain separate. Start with the default profile and
+observe workload-specific memory/DB pressure before choosing this profile. A
+small `questdb.batch.maxRows` still splits accepted work into smaller ILP batches:
+merely increasing that threshold cannot create rows that have not been admitted.
+
+The [batch sizing acceptance](docs/archiver-import-batch-sizing-acceptance.md)
+compares the separate effects of pass size and actual ILP batch size. Local
+20k-file results: about 30.6 seconds at 128/64, 21.0 seconds at 256/64 and
+17.0 seconds at 256/128. These synthetic append-mode results do not forecast a
+50M-file production import, mixed table packets or many-table/dedup workloads.
+
+```sh
+node --import ./node_modules/tsx/dist/loader.mjs scripts/compare-legacy-import-throughput.mts 20000 larger-pass /tmp/import-larger-pass.json
+node --import ./node_modules/tsx/dist/loader.mjs scripts/compare-legacy-import-throughput.mts 20000 larger-both /tmp/import-larger-both.json reverse-days
+node --import ./node_modules/tsx/dist/loader.mjs scripts/accept-real-questdb-import.mts 2000 /tmp/import-large-faults.json import-hint pipeline-large
+```
+
+### Shorter healthy import pacing (opt-in)
+
+The default `archiver.legacyImport.intervalMs` remains **100 ms**. An explicit
+value of **10 ms** is now accepted for a prepared backlog on a healthy database.
+It only shortens the delay between successful bounded passes and the background
+scheduler tick. The existing **5-second failure backoff**, file identity checks,
+source ownership, checkpoint fsync and ACK-before-unlink remain in place.
+Changing startup configuration requires a service restart.
+
+For the measured 256-file/128-writer profile above, set `intervalMs` to `10`.
+Keep monitoring live traffic, memory and database pressure; a shorter healthy
+pause does not raise any queue, file or byte bound. The local 20k-file comparison
+was 16.89 seconds at 100 ms and 9.09 seconds at 10 ms; the 100k-file short-pacing
+run took 46.65 seconds. These are synthetic local fixtures, not a production
+50-million-file capacity estimate.
+
+```sh
+pnpm exec tsx scripts/compare-legacy-import-throughput.mts 20000 short-pacing /tmp/import-short-pacing.json
+pnpm exec tsx scripts/accept-real-questdb-import.mts 2000 /tmp/import-short-faults.json import-hint pipeline-large short-pacing
+```

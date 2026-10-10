@@ -1997,7 +1997,7 @@
               }
             },
             "legacyImport": {
-              "description": "Bounded legacy import settings, read at startup. Defaults: 128 events/pass, up to 64 writers (capped by live capacity), 1 MiB/file, 16 MiB/pass, 500 ms between passes. Source must be closed by its old writer before starting import.",
+              "description": "Bounded legacy import settings, read at startup. Defaults: 256 events/pass, up to 64 writers (capped at one eighth of live event capacity), 1 MiB/file, 16 MiB/pass, 100 ms between passes. Source must be closed by its old writer before starting import.",
               "type": "object",
               "properties": {
                 "batchSize": {
@@ -2006,6 +2006,7 @@
                   "maximum": 512
                 },
                 "concurrency": {
+                  "description": "Requested legacy writers (default 64). Runtime caps this at floor(ingestQueueMaxEvents / 8), minimum 1. Requesting 128 requires at least 1024 live event capacity; effective limits are reported by import status.",
                   "type": "integer",
                   "minimum": 1,
                   "maximum": 128
@@ -2021,8 +2022,9 @@
                   "maximum": 67108864
                 },
                 "intervalMs": {
+                  "description": "Healthy-pass pacing (default 100 ms). Explicit 10 ms is opt-in for measured local capacity; failure backoff, queue limits and ACK checks remain unchanged.",
                   "type": "integer",
-                  "minimum": 100,
+                  "minimum": 10,
                   "maximum": 60000
                 }
               }

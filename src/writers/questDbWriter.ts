@@ -190,6 +190,7 @@ export class QuestDBWriter {
     topicMeta?: UnsTopicMetadata,
     ingestMode?: IngestMode,
     entityIdentity?: QuestDbEntityIdentityEvidence,
+    writeOptions?: { maxBatchWaitMs?: number },
   ) {
     const parseToMs = (field: string, value: unknown): number | null => {
       if (value === null || value === undefined) return null;
@@ -330,7 +331,7 @@ export class QuestDBWriter {
 
         await this.performWindowDeleteOnce(tableName, topicTag, windowStart, windowEnd, time, ingestMode);
         await builder.at(time, "ms");
-      });
+      }, writeOptions?.maxBatchWaitMs);
     }
 
     // Only data and table are supported in the new UNS message format.
@@ -497,7 +498,7 @@ export class QuestDBWriter {
         }
         await this.performWindowDeleteOnce(tableName, topicTag, windowStart, windowEnd, time, ingestMode);
         await builder.at(time, "ms");
-      });
+      }, writeOptions?.maxBatchWaitMs);
     }
   }
 
@@ -588,6 +589,7 @@ export class QuestDBWriter {
     ingestMode: IngestMode,
     columns: CanonicalTableColumnEntry[],
     writeFn: () => Promise<void>,
+    maxBatchWaitMs?: number,
   ): Promise<void> {
     const previous = this.pendingWrites.get(tableName) ?? Promise.resolve();
     let writeCompletion: Promise<void> | undefined;
@@ -598,7 +600,7 @@ export class QuestDBWriter {
         // Keep table setup/submission ordered, but do not make this table's
         // admission queue wait for the shared sender to flush. The batcher
         // itself serializes all row construction and bounds accepted rows.
-        writeCompletion = this.safeWrite(writeFn);
+        writeCompletion = this.safeWrite(writeFn, maxBatchWaitMs);
       });
 
     // Store only setup/submission work so a slow flush cannot create an
@@ -611,8 +613,8 @@ export class QuestDBWriter {
     await writeCompletion;
   }
 
-  private safeWrite(writeFn: () => Promise<void>): Promise<void> {
-    return this.batcher.enqueue(writeFn);
+  private safeWrite(writeFn: () => Promise<void>, maxBatchWaitMs?: number): Promise<void> {
+    return this.batcher.enqueue(writeFn, maxBatchWaitMs);
   }
 
   private async ensureTable(

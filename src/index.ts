@@ -59,6 +59,7 @@ import type { QuestDbEntityIdentityEvidence } from "./writers/questDbWriter.js";
 import {
   hasStoredReplayLiveHeadroom,
   resolveStoredReplayLimits,
+  resolveLegacyImportConcurrency,
 } from "./stored-replay-limits.js";
 import {
   discardExpiredOrOverflowInactiveEvents,
@@ -449,8 +450,8 @@ await ensureEventStorageDirectories();
 const legacyImports = new LegacyImportManager({
   sources: await loadLegacySources(path.resolve("."), legacyRuntimeSettings?.legacySources),
   settings: { ...legacyRuntimeSettings?.legacyImport,
-    concurrency: Math.min(legacyRuntimeSettings?.legacyImport?.concurrency ?? 64,
-      Math.max(1, Math.floor(ingestQueueMaxEvents / 8))) },
+    concurrency: resolveLegacyImportConcurrency(ingestQueueMaxEvents,
+      legacyRuntimeSettings?.legacyImport?.concurrency) },
   liveDirectory: EVENT_STORAGE_DIR,
   instanceId: `${config.uns.processName}:${process.env.UNS_CONTROLLER_NAME ?? "standalone"}:${path.resolve(".")}`,
   policyDigest: legacyStoragePolicyDigest,
@@ -521,7 +522,7 @@ async function writeLegacyPacket(event: LegacyEvent, context: { startedAt: strin
         // Historical validity does not depend on the current active-topic set.
         await questDbWriter.writeUnsPacket(packet, storage.tablePrefix, event.topic,
           topicMetadata[event.topic] ?? topicMetadata[sanitizeTopicName(event.topic)],
-          mode, identity.evidence ?? undefined);
+          mode, identity.evidence ?? undefined, { maxBatchWaitMs: 25 });
       },
     });
     if (result.outcome === "written") {

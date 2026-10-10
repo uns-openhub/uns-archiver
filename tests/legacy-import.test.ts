@@ -561,11 +561,357 @@ test("forced process exit leaves a claim and file recoverable only on reviewed r
   assert.equal(manager.status()[0].job?.state, "completed");
 });
 
- test("queued import commands recheck runtime admission before changing state", async t => {
+test("queued import commands recheck runtime admission before changing state", async (t) => {
   let accepting = true;
   const f = await fixture(t, { acceptingCommands: () => accepting });
   const pending = f.command("start");
   accepting = false;
   await assert.rejects(pending, { code: "runtime-released" });
   assert.equal(f.manager.status()[0].job, null);
- });
+});
+
+test("old archiver empty failed directory does not block completion or get removed", async (t) => {
+  const { manager, source, command, writeFile } = await fixture(t);
+  await fs.mkdir(path.join(source, "failed"));
+  await writeFile("old.event");
+  await command("start");
+  await settle(manager);
+  assert.equal(manager.status()[0].job?.state, "completed");
+  assert.equal(manager.status()[0].job?.written, 1);
+  assert.deepEqual(await fs.readdir(path.join(source, "failed")), []);
+});
+
+test("nonempty old failed directory is retained and requires review", async (t) => {
+  const { manager, source, command, writeFile } = await fixture(t);
+  await fs.mkdir(path.join(source, "failed"));
+  await fs.writeFile(path.join(source, "failed", "failed.event"), "preserve");
+  await writeFile("old.event");
+  await command("start");
+  await settle(manager);
+  assert.equal(manager.status()[0].job?.state, "blocked");
+  assert.equal(manager.status()[0].job?.written, 1);
+  assert.equal(
+    await fs.readFile(path.join(source, "failed", "failed.event"), "utf8"),
+    "preserve",
+  );
+});
+
+test("an empty linked failed directory is retained and never accepted as harmless", async (t) => {
+  const { manager, source, live, command } = await fixture(t);
+  await fs.symlink(live, path.join(source, "failed"));
+  await command("start");
+  await settle(manager);
+  assert.equal(manager.status()[0].job?.state, "blocked");
+  assert.equal(manager.status()[0].job?.written, 0);
+  assert.equal(
+    (await fs.lstat(path.join(source, "failed"))).isSymbolicLink(),
+    true,
+  );
+});
+
+test("phase diagnostics are bounded aggregates and status does not expose source paths", async (t) => {
+  const f = await fixture(t);
+  await f.writeFile("timed.event");
+  await f.command("start");
+  await settle(f.manager);
+  const status = f.manager.status()[0];
+  assert.equal(status.job?.state, "completed");
+  assert.ok(status.performance.passes > 0);
+  for (const phase of [
+    "scan",
+    "readParse",
+    "writeAck",
+    "finalize",
+    "checkpoint",
+  ] as const) {
+    const sample = status.performance.phases[phase];
+    assert.ok(sample.count > 0);
+    assert.ok(sample.totalMs >= sample.maximumMs);
+    assert.ok(sample.maximumMs >= 0);
+  }
+  assert.ok(!JSON.stringify(status).includes(f.source));
+  status.performance.phases.scan.count = -1;
+  assert.ok(f.manager.status()[0].performance.phases.scan.count > 0);
+});
+
+async function pendingPipeline(
+  t: test.TestContext,
+  extra: Parameters<typeof fixture>[1] = {},
+) {
+  let release!: () => void;
+  const ack = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const writes: string[] = [];
+  const f = await fixture(t, {
+    ...extra,
+    settings: {
+      batchSize: 8,
+      concurrency: 1,
+      maxFileBytes: 256,
+      maxBatchBytes: 1024,
+      ...extra?.settings,
+    },
+    write: async (event) => {
+      writes.push(event.topic);
+      if (writes.length === 1) await ack;
+      return { outcome: "written" };
+    },
+  });
+  for (let i = 0; i < 8; i++)
+    await f.writeFile(`${i}.event`, { topic: `${i}.event`, message: "{}" });
+  await f.command("start");
+  const work = f.manager.tick();
+  try {
+    for (
+      let i = 0;
+      i < 200 && f.manager.status()[0].performance.phases.readParse.count < 2;
+      i++
+    )
+      await delay(5);
+    assert.equal(writes.length, 1);
+    assert.equal(f.manager.status()[0].performance.phases.readParse.count, 2);
+  } catch (error) {
+    release();
+    await work;
+    throw error;
+  }
+  // Always release before fixture teardown, including assertion failures.
+  t.after(() => release());
+  return { ...f, release, writes, work };
+}
+
+test("one bounded next chunk is prepared while the writer waits for ACK", async (t) => {
+  const f = await pendingPipeline(t);
+  try {
+    const p = f.manager.status()[0].performance.pipeline;
+    assert.equal(p.readAheadChunks, 1);
+    assert.equal(p.maximumResidentFiles, 2);
+    assert.ok(p.maximumResidentFileBytes <= 1024);
+    assert.equal(f.manager.status()[0].job?.written, 0);
+    assert.equal(
+      (await fs.readdir(f.source)).filter((n) => n.endsWith(".event")).length,
+      8,
+    );
+  } finally {
+    f.release();
+  }
+  await f.work;
+  await settle(f.manager);
+  assert.equal(f.manager.status()[0].job?.written, 8);
+  assert.equal(f.manager.status()[0].job?.state, "completed");
+});
+
+test("pause discards read-ahead and admits no new write after pause finishes", async (t) => {
+  const f = await pendingPipeline(t);
+  try {
+    await f.command("pause", 1);
+  } finally {
+    f.release();
+  }
+  await f.work;
+  assert.equal(f.writes.length, 1);
+  assert.equal(f.manager.status()[0].job?.state, "paused");
+  assert.equal(
+    (await fs.readdir(f.source)).filter((n) => n.endsWith(".event")).length,
+    7,
+  );
+  await f.command("resume", 2);
+  await settle(f.manager);
+  assert.equal(f.manager.status()[0].job?.written, 8);
+});
+
+test("shutdown drains only accepted writes and preserves prefetched files for reviewed resume", async (t) => {
+  const f = await pendingPipeline(t);
+  const closing = f.manager.close();
+  let closed = false;
+  void closing.then(() => {
+    closed = true;
+  });
+  try {
+    await delay(10);
+    assert.equal(closed, false);
+  } finally {
+    f.release();
+  }
+  await f.work;
+  await closing;
+  assert.equal(f.writes.length, 1);
+  assert.equal(f.manager.status()[0].job?.state, "paused");
+  assert.equal(
+    f.manager.status()[0].job?.lastError,
+    "shutdown-review-required",
+  );
+  const peer = f.create();
+  await peer.tick();
+  assert.equal(peer.status()[0].job?.written, 1);
+  assert.equal(peer.status()[0].job?.state, "paused");
+  await peer.command({
+    action: "resume",
+    sourceId: "old-instance",
+    expectedRevision: 1,
+    requestId: "resume-pipeline",
+    confirmSourceClosed: true,
+  });
+  await settle(peer);
+  assert.equal(peer.status()[0].job?.written, 8);
+});
+
+test("loss of live headroom prevents read-ahead entering the writer", async (t) => {
+  let headroom = true;
+  const f = await pendingPipeline(t, { headroom: () => headroom });
+  headroom = false;
+  f.release();
+  await f.work;
+  assert.equal(f.writes.length, 1);
+  assert.equal(f.manager.status()[0].job?.state, "running");
+  headroom = true;
+  await settle(f.manager);
+  assert.equal(f.manager.status()[0].job?.written, 8);
+});
+
+test("modified read-ahead files are retained and never written from stale envelopes", async (t) => {
+  const f = await pendingPipeline(t);
+  try {
+    for (let i = 0; i < 8; i++) {
+      const name = `${i}.event`;
+      if (name !== f.writes[0])
+        await f.writeFile(name, {
+          topic: "replacement",
+          message: "changed-content",
+        });
+    }
+  } finally {
+    f.release();
+  }
+  await f.work;
+  assert.equal(f.writes.length, 1);
+  assert.equal(f.manager.status()[0].job?.lastError, "source-file-changed");
+  assert.equal(
+    (await fs.readdir(f.source)).filter((n) => n.endsWith(".event")).length,
+    7,
+  );
+});
+
+test("policy change while preparing the next chunk stops further writes", async (t) => {
+  let policy = "original";
+  const f = await pendingPipeline(t, { policy: () => policy });
+  policy = "changed";
+  f.release();
+  await f.work;
+  assert.equal(f.writes.length, 1);
+  assert.equal(f.manager.status()[0].job?.state, "blocked");
+  assert.equal(f.manager.status()[0].job?.lastError, "storage-policy-changed");
+  assert.equal(
+    (await fs.readdir(f.source)).filter((n) => n.endsWith(".event")).length,
+    7,
+  );
+});
+
+test("read-ahead residency obeys the source byte cap for large files", async (t) => {
+  const f = await fixture(t, {
+    settings: {
+      batchSize: 8,
+      concurrency: 4,
+      maxFileBytes: 256,
+      maxBatchBytes: 256,
+    },
+  });
+  for (let i = 0; i < 8; i++)
+    await f.writeFile(`${i}.event`, {
+      topic: "large",
+      message: "x".repeat(180),
+    });
+  await f.command("start");
+  await settle(f.manager);
+  const status = f.manager.status()[0];
+  assert.equal(status.job?.written, 8);
+  assert.equal(status.performance.pipeline.maximumResidentFiles, 1);
+  assert.ok(status.performance.pipeline.maximumResidentFileBytes <= 256);
+});
+
+test("ownership loss during read-ahead prevents both deletion and further writes", async (t) => {
+  const f = await pendingPipeline(t);
+  const ownerFile = path.join(f.source, ".uns-archiver-import/lock/owner.json");
+  const original = await fs.readFile(ownerFile, "utf8");
+  try {
+    const changed = JSON.parse(original);
+    changed.token = "foreign-owner";
+    await fs.writeFile(ownerFile, JSON.stringify(changed));
+    f.release();
+    await f.work;
+    assert.equal(f.writes.length, 1);
+    assert.equal(f.manager.status()[0].job?.written, 0);
+    assert.equal(f.manager.status()[0].job?.state, "blocked");
+    assert.equal(f.manager.status()[0].job?.lastError, "source-ownership-lost");
+    assert.equal(
+      (await fs.readdir(f.source)).filter((n) => n.endsWith(".event")).length,
+      8,
+    );
+  } finally {
+    f.release();
+    await fs.writeFile(ownerFile, original);
+  }
+});
+
+test("effective import settings expose the measured default and cannot be mutated through status", async (t) => {
+  const f = await fixture(t);
+  const settings = f.manager.status()[0].settings;
+  assert.equal(settings.batchSize, 256);
+  assert.equal(settings.concurrency, 64);
+  assert.equal(settings.maxBatchBytes, 16 * 1024 * 1024);
+  settings.batchSize = 512;
+  assert.equal(f.manager.status()[0].settings.batchSize, 256);
+});
+
+test("explicit legacy batch size and pacing remain authoritative", async (t) => {
+  const f = await fixture(t, { settings: { batchSize: 128, intervalMs: 500 } });
+  const settings = f.manager.status()[0].settings;
+  assert.equal(settings.batchSize, 128);
+  assert.equal(settings.intervalMs, 500);
+});
+
+test("short pacing is explicit, bounded and does not suppress writer failure backoff", async (t) => {
+  const f = await fixture(t, {
+    settings: { intervalMs: 10 },
+    write: async () => ({
+      outcome: "deferred",
+      reason: "database-unavailable",
+    }),
+  });
+  await f.writeFile("a.event");
+  await f.command("start");
+  await f.manager.tick();
+  const before = f.manager.status()[0];
+  assert.equal(before.settings.intervalMs, 10);
+  assert.equal(before.job?.deferred, 1);
+  await delay(20);
+  await f.manager.tick();
+  assert.equal(f.manager.status()[0].job?.deferred, 1);
+  assert.equal(
+    await fs.readFile(path.join(f.source, "a.event"), "utf8"),
+    JSON.stringify({ topic: "plant/retired/motor/speed", message: "{}" }),
+  );
+  await assert.rejects(
+    fixture(t, { settings: { intervalMs: 9 } }),
+    /invalid-import-limits/,
+  );
+});
+
+test("background scheduler honors opt-in short pacing while ACK is still required", async (t) => {
+  const f = await fixture(t, {
+    settings: { intervalMs: 10, batchSize: 1, concurrency: 1 },
+  });
+  await f.writeFile("a.event");
+  await f.writeFile("b.event");
+  await f.command("start");
+  f.manager.startBackground();
+  for (
+    let i = 0;
+    i < 100 && f.manager.status()[0].job?.state === "running";
+    i++
+  )
+    await delay(10);
+  assert.equal(f.manager.status()[0].job?.written, 2);
+  assert.equal(f.manager.status()[0].job?.state, "completed");
+});

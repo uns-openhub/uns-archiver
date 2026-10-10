@@ -41,3 +41,10 @@ export const hasStoredReplayLiveHeadroom = (
     snapshot.pendingBytes < ingestQueueMaxBytes - byteReserve
   );
 };
+
+/** Legacy replay retains its existing one-eighth live event-capacity budget. */
+export const resolveLegacyImportConcurrency = (
+  ingestQueueMaxEvents: number,
+  requested = 64,
+): number =>
+  Math.min(requested, Math.max(1, Math.floor(ingestQueueMaxEvents / 8)));

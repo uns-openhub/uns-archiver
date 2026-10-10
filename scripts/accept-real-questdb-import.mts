@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { Sender } from "@questdb/nodejs-client";
 import { LegacyImportManager } from "../src/legacy-import.js";
+import { resolveLegacyImportConcurrency } from "../src/stored-replay-limits.js";
 import { writeLegacyEvent } from "../src/legacy-import-writer.js";
 import { QuestDBWriter } from "../src/writers/questDbWriter.js";
 
@@ -15,6 +16,17 @@ import { QuestDBWriter } from "../src/writers/questDbWriter.js";
 const count = Number(process.argv[2] ?? 20_000);
 assert.ok(Number.isSafeInteger(count) && count >= 512 && count <= 100_000);
 const output = process.argv[3];
+const healthyInterval = process.argv[6] === "short-pacing" ? 10 : 100;
+assert.ok(process.argv[6] === undefined || process.argv[6] === "short-pacing");
+const importHint = process.argv[4] === "import-hint";
+const largerBatch = process.argv[5] === "pipeline-large";
+const pipeline = process.argv[5] === "pipeline" || largerBatch;
+assert.ok(process.argv[5] === undefined || pipeline);
+const liveQueueCapacity = largerBatch ? 1024 : 512;
+const concurrency = resolveLegacyImportConcurrency(
+  liveQueueCapacity,
+  largerBatch ? 128 : 64,
+);
 const database = "http://127.0.0.1:9000";
 const root = await fs.realpath(
   await fs.mkdtemp(path.join(tmpdir(), "openhub-p4-questdb-import-")),
@@ -36,6 +48,12 @@ const evidence: Record<string, unknown> = {
     "production-scale",
   ],
   eventCount: count,
+  healthyIntervalMs: healthyInterval,
+  importHint,
+  pipeline,
+  largerBatch,
+  liveQueueCapacity,
+  concurrency,
   table,
 };
 const sql = async (query: string) => {
@@ -96,9 +114,9 @@ const sender = await Sender.fromConfig(
   `http::addr=127.0.0.1:${proxyPort};auto_flush=off;retry_timeout=1000;request_timeout=2000;`,
 );
 const writer = new QuestDBWriter(sender, undefined, {
-  maxRows: 64,
-  maxPendingRows: 256,
-  flushIntervalMs: 20,
+  maxRows: importHint ? 512 : 64,
+  maxPendingRows: 2048,
+  flushIntervalMs: importHint ? 1000 : 20,
 });
 const createManager = () =>
   new LegacyImportManager({
@@ -107,9 +125,9 @@ const createManager = () =>
     instanceId: "p4-real-questdb",
     policyDigest: () => "fixture-append-v1",
     settings: {
-      batchSize: 64,
-      concurrency: 64,
-      intervalMs: 100,
+      batchSize: pipeline ? concurrency * 2 : 64,
+      concurrency,
+      intervalMs: healthyInterval,
       maxFileBytes: 2048,
       maxBatchBytes: 1024 * 1024,
     },
@@ -118,7 +136,16 @@ const createManager = () =>
     write: (event) =>
       writeLegacyEvent(event, {
         findStorage: () => ({ ingestMode: "append" }),
-        write: (packet) => writer.writeUnsPacket(packet, prefix, event.topic),
+        write: (packet) =>
+          writer.writeUnsPacket(
+            packet,
+            prefix,
+            event.topic,
+            undefined,
+            undefined,
+            undefined,
+            importHint ? { maxBatchWaitMs: 25 } : undefined,
+          ),
       }),
   });
 let manager = createManager();
@@ -183,12 +210,33 @@ try {
   await command("start");
   const slow = manager.tick();
   await waitFor(() => writes > 0);
+  if (pipeline) {
+    await waitFor(
+      () =>
+        manager.status()[0].performance.phases.readParse.count >=
+        concurrency * 2,
+    );
+    const status = manager.status()[0];
+    assert.equal(status.job?.written, 0);
+    assert.equal(status.job?.inFlight, concurrency);
+    assert.equal(
+      status.performance.pipeline.maximumResidentFiles,
+      concurrency * 2,
+    );
+    evidence.readAheadDuringSlowAck = status.performance.pipeline;
+  }
   const pauseStarted = performance.now();
   await command("pause");
   evidence.pauseDuringSlowFlushMs = performance.now() - pauseStarted;
   assert.equal(manager.status()[0].job?.state, "paused");
   await slow; // In-flight acknowledged writes may finish after pause.
   const acknowledged = manager.status()[0].job!.written;
+  if (pipeline)
+    assert.equal(
+      acknowledged,
+      concurrency,
+      "Paused read-ahead must remain unacknowledged",
+    );
   const immediateRows = (await sql(`select count() from ${table}`))
     .dataset[0][0];
   const visibilityStarted = performance.now();
@@ -280,6 +328,7 @@ try {
     duplicateRows: 0,
     residualSourceEvents: 0,
     importer: manager.status()[0].job,
+    performance: manager.status()[0].performance,
     writer: writer.getBatchDiagnostics(),
     maximumRssBytes: maximumRss,
     eventLoopDelayMaxMs: loop.max / 1e6,

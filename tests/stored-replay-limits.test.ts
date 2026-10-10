@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   hasStoredReplayLiveHeadroom,
   resolveStoredReplayLimits,
+  resolveLegacyImportConcurrency,
 } from "../src/stored-replay-limits.js";
 
 test("derives a bounded replay batch and concurrency from live capacity", () => {
@@ -53,4 +54,15 @@ test("reserves one quarter of live event and byte capacity for MQTT", () => {
     ),
     false,
   );
+});
+
+test("legacy concurrency preserves its default and explicit live-capacity budget", () => {
+  assert.equal(resolveLegacyImportConcurrency(512), 64);
+  assert.equal(resolveLegacyImportConcurrency(1024), 64);
+  assert.equal(resolveLegacyImportConcurrency(512, 128), 64);
+  assert.equal(resolveLegacyImportConcurrency(1024, 128), 128);
+  assert.equal(resolveLegacyImportConcurrency(256, 128), 32);
+  assert.equal(resolveLegacyImportConcurrency(8, 128), 1);
+  assert.equal(resolveLegacyImportConcurrency(1, 128), 1);
+  assert.equal(resolveLegacyImportConcurrency(1024, 8), 8);
 });

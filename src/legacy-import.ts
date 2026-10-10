@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { constants, promises as fs } from "node:fs";
 import path from "node:path";
 import { hostname } from "node:os";
@@ -53,8 +54,49 @@ type Inspection = {
   capturedAt: string | null;
   error: string | null;
 };
+type Phase = "scan" | "readParse" | "writeAck" | "finalize" | "checkpoint";
+type PhaseTiming = { count: number; totalMs: number; maximumMs: number };
+type ImportPerformance = {
+  phases: Record<Phase, PhaseTiming>;
+  passes: number;
+  betweenPassIdleMs: number;
+  pipeline: {
+    readAheadChunks: number;
+    maximumResidentFiles: number;
+    maximumResidentFileBytes: number;
+  };
+};
+const emptyPerformance = (): ImportPerformance => ({
+  phases: Object.fromEntries(
+    ["scan", "readParse", "writeAck", "finalize", "checkpoint"].map((key) => [
+      key,
+      { count: 0, totalMs: 0, maximumMs: 0 },
+    ]),
+  ) as Record<Phase, PhaseTiming>,
+  passes: 0,
+  betweenPassIdleMs: 0,
+  pipeline: {
+    readAheadChunks: 0,
+    maximumResidentFiles: 0,
+    maximumResidentFileBytes: 0,
+  },
+});
+type SelectedFile = {
+  name: string;
+  size: number;
+  inode: number;
+  modified: number;
+};
+type PreparedFile = {
+  entry: SelectedFile;
+  event: LegacyEvent | null;
+  error?: string;
+  skipped?: boolean;
+};
 type SourceRuntime = {
   source: LegacySource;
+  performance: ImportPerformance;
+  lastPassEndedAt?: number;
   canonical?: string;
   device?: number;
   inode?: number;
@@ -148,6 +190,7 @@ export class LegacyImportManager {
         fault("invalid-source-configuration", 400);
       this.sources.set(source.id, {
         source: { ...source },
+        performance: emptyPerformance(),
         loaded: false,
         job: null,
         error: null,
@@ -168,11 +211,11 @@ export class LegacyImportManager {
       });
     }
     this.limits = {
-      batchSize: 128,
+      batchSize: 256,
       concurrency: 64,
       maxFileBytes: 1024 * 1024,
       maxBatchBytes: 16 * 1024 * 1024,
-      intervalMs: 500,
+      intervalMs: 100,
       ...options.settings,
     };
     const bounds = {
@@ -180,7 +223,7 @@ export class LegacyImportManager {
       concurrency: [1, 128],
       maxFileBytes: [1, 16 * 1024 * 1024],
       maxBatchBytes: [1, 64 * 1024 * 1024],
-      intervalMs: [100, 60_000],
+      intervalMs: [10, 60_000],
     };
     for (const [key, [min, max]] of Object.entries(bounds)) {
       const value = this.limits[key as keyof LegacyImportSettings];
@@ -200,6 +243,8 @@ export class LegacyImportManager {
       inspection: clone(runtime.inspection),
       quarantinePresent: runtime.quarantinePresent,
       drainRate: clone(runtime.drainRate),
+      performance: clone(runtime.performance),
+      settings: { ...this.limits },
       job: runtime.job ? this.publicJob(runtime.job) : null,
     }));
   }
@@ -244,7 +289,7 @@ export class LegacyImportManager {
         this.background = null;
         if (!this.closed) this.schedule();
       });
-    }, 100);
+    }, Math.min(100, this.limits.intervalMs));
     this.timer.unref();
   }
   private getSource(id: string) {
@@ -296,7 +341,8 @@ export class LegacyImportManager {
       if (command.action === "resume" && !runtime.job) fault("job-not-started");
       await this.claim(runtime);
       if (this.closed) fault("importer-stopping");
-      if (this.options.acceptingCommands?.() === false) fault("runtime-released");
+      if (this.options.acceptingCommands?.() === false)
+        fault("runtime-released");
       if ((runtime.job?.revision ?? 0) !== command.expectedRevision)
         fault("revision-conflict");
       if (
@@ -340,7 +386,8 @@ export class LegacyImportManager {
       // Never change a persisted job owned by another runtime.
       await this.claim(runtime);
       if (this.closed) fault("importer-stopping");
-      if (this.options.acceptingCommands?.() === false) fault("runtime-released");
+      if (this.options.acceptingCommands?.() === false)
+        fault("runtime-released");
       if ((runtime.job?.revision ?? 0) !== command.expectedRevision)
         fault("revision-conflict");
       runtime.job!.state = command.action === "pause" ? "paused" : "cancelled";
@@ -566,6 +613,24 @@ export class LegacyImportManager {
       await directory.close();
     }
   }
+  private recordPhase(runtime: SourceRuntime, phase: Phase, elapsed: number) {
+    const sample = runtime.performance.phases[phase];
+    sample.count++;
+    sample.totalMs += elapsed;
+    sample.maximumMs = Math.max(sample.maximumMs, elapsed);
+  }
+  private async measure<T>(
+    runtime: SourceRuntime,
+    phase: Phase,
+    work: () => Promise<T>,
+  ): Promise<T> {
+    const started = performance.now();
+    try {
+      return await work();
+    } finally {
+      this.recordPhase(runtime, phase, performance.now() - started);
+    }
+  }
   private async checkpoint(runtime: SourceRuntime) {
     const work = runtime.checkpointTail.then(async () => {
       await this.assertOwner(runtime);
@@ -576,7 +641,7 @@ export class LegacyImportManager {
       );
     });
     runtime.checkpointTail = work.catch(() => undefined);
-    await work;
+    await this.measure(runtime, "checkpoint", () => work);
   }
   private errorCode(error: unknown) {
     return error instanceof LegacyImportError
@@ -658,7 +723,199 @@ export class LegacyImportManager {
     if (pass.complete) runtime.inspecting = false;
   }
 
+  /** The old archiver always creates failed/. Only an unchanged empty directory
+   * is harmless; nonempty directories and links still require operator review. */
+  private async isEmptyLegacyFailedDirectory(
+    runtime: SourceRuntime,
+    entry: import("node:fs").Dirent,
+  ): Promise<boolean> {
+    if (entry.name !== "failed" || !entry.isDirectory()) return false;
+    const directory = path.join(runtime.canonical!, entry.name);
+    const before = await fs.lstat(directory);
+    if (!before.isDirectory() || (await fs.realpath(directory)) !== directory)
+      return false;
+    const cursor = await fs.opendir(directory, { bufferSize: 1 });
+    let empty: boolean;
+    try {
+      empty = (await cursor.read()) === null;
+    } finally {
+      await cursor.close();
+    }
+    const after = await fs.lstat(directory);
+    return (
+      empty &&
+      after.isDirectory() &&
+      after.ino === before.ino &&
+      after.dev === before.dev &&
+      after.mtimeMs === before.mtimeMs &&
+      (await fs.realpath(directory)) === directory
+    );
+  }
+
+  private mayAdmit(runtime: SourceRuntime) {
+    return (
+      !this.closed &&
+      !this.commandBusy &&
+      runtime.job?.state === "running" &&
+      this.options.hasLiveHeadroom() &&
+      this.options.canWrite()
+    );
+  }
+
+  private async prepareChunk(
+    runtime: SourceRuntime,
+    entries: SelectedFile[],
+    readAhead = false,
+  ) {
+    if (readAhead) runtime.performance.pipeline.readAheadChunks++;
+    return Promise.all(
+      entries.map(async (entry): Promise<PreparedFile> => {
+        if (!this.mayAdmit(runtime))
+          return { entry, event: null, skipped: true };
+        const job = runtime.job!;
+        try {
+          const readStarted = performance.now();
+          const file = path.join(runtime.canonical!, entry.name);
+          const handle = await fs.open(
+            file,
+            constants.O_RDONLY | constants.O_NOFOLLOW,
+          );
+          let event: LegacyEvent | null = null;
+          try {
+            const stat = await handle.stat();
+            if (
+              !stat.isFile() ||
+              stat.nlink !== 1 ||
+              stat.ino !== entry.inode ||
+              stat.size !== entry.size ||
+              stat.mtimeMs !== entry.modified
+            )
+              fault("source-file-changed");
+            const buffer = Buffer.alloc(entry.size + 1);
+            const read = await handle.read(buffer, 0, buffer.length, 0);
+            if (read.bytesRead !== entry.size) fault("source-file-changed");
+            job.bytesRead += read.bytesRead;
+            try {
+              const parsed = JSON.parse(
+                buffer.subarray(0, read.bytesRead).toString("utf8"),
+              );
+              if (
+                !parsed ||
+                typeof parsed.topic !== "string" ||
+                !parsed.topic ||
+                parsed.message === undefined
+              )
+                event = null;
+              else event = parsed;
+            } catch {
+              event = null;
+            }
+          } finally {
+            await handle.close();
+            this.recordPhase(
+              runtime,
+              "readParse",
+              performance.now() - readStarted,
+            );
+          }
+          return { entry, event };
+        } catch (error) {
+          return { entry, event: null, error: this.errorCode(error) };
+        }
+      }),
+    );
+  }
+
+  private async writePrepared(runtime: SourceRuntime, prepared: PreparedFile) {
+    const job = runtime.job!;
+    const { entry, event } = prepared;
+    // Reading ahead is not acceptance into the writer and grants no ACK.
+    if (prepared.skipped || !this.mayAdmit(runtime)) {
+      runtime.sweepRemaining++;
+      return;
+    }
+    let finalizeStarted: number | undefined;
+    job.inFlight++;
+    try {
+      if (prepared.error) fault(prepared.error);
+      const file = path.join(runtime.canonical!, entry.name);
+      // The file may have changed while an earlier chunk awaited its ACK.
+      const before = await fs.lstat(file);
+      if (
+        !before.isFile() ||
+        before.nlink !== 1 ||
+        before.ino !== entry.inode ||
+        before.size !== entry.size ||
+        before.mtimeMs !== entry.modified
+      )
+        fault("source-file-changed");
+      if (job.policyDigest !== this.options.policyDigest())
+        fault("storage-policy-changed");
+      if (!this.mayAdmit(runtime)) {
+        runtime.sweepRemaining++;
+        return;
+      }
+      const result = !event
+        ? ({ outcome: "quarantined", reason: "invalid-envelope" } as const)
+        : await this.measure(runtime, "writeAck", () =>
+            this.options.write(event, { startedAt: job.startedAt! }),
+          );
+      finalizeStarted = performance.now();
+      await this.assertOwner(runtime);
+      await this.validateSource(runtime);
+      const after = await fs.lstat(file);
+      if (
+        !after.isFile() ||
+        after.nlink !== 1 ||
+        after.ino !== entry.inode ||
+        after.size !== entry.size ||
+        after.mtimeMs !== entry.modified
+      )
+        fault("source-file-changed");
+      if (result.outcome === "written" || result.outcome === "duplicate") {
+        await fs.unlink(file);
+        job[result.outcome]++;
+        if (result.outcome === "written") {
+          job.rowsWritten += result.rows ?? 0;
+          if (
+            result.oldestEventTime &&
+            (!job.oldestEventTimeSeen ||
+              result.oldestEventTime < job.oldestEventTimeSeen)
+          )
+            job.oldestEventTimeSeen = result.oldestEventTime;
+        }
+      } else if (result.outcome === "quarantined") {
+        await this.quarantine(runtime, entry.name, result.reason);
+        job.quarantined++;
+      } else {
+        job.deferred++;
+        runtime.sweepRemaining++;
+        job.lastError = result.reason;
+        runtime.nextRun = Date.now() + 5000;
+      }
+    } catch (error) {
+      runtime.sweepRemaining++;
+      job.lastError = this.errorCode(error);
+      runtime.nextRun = Date.now() + 5000;
+    } finally {
+      if (finalizeStarted !== undefined)
+        this.recordPhase(
+          runtime,
+          "finalize",
+          performance.now() - finalizeStarted,
+        );
+      job.inFlight--;
+    }
+  }
+
   private async replayPass(runtime: SourceRuntime) {
+    const started = performance.now();
+    if (runtime.lastPassEndedAt !== undefined)
+      runtime.performance.betweenPassIdleMs += Math.max(
+        0,
+        started - runtime.lastPassEndedAt,
+      );
+    runtime.performance.passes++;
     await this.validateSource(runtime);
     await this.assertOwner(runtime);
     const job = runtime.job!;
@@ -669,162 +926,101 @@ export class LegacyImportManager {
       await this.finishPass(runtime);
       return;
     }
-    const selected: {
-      name: string;
-      size: number;
-      inode: number;
-      modified: number;
-    }[] = [];
+    const selected: SelectedFile[] = [];
     let bytes = 0;
-    const pass = await runtime.replay!.pass(
-      async (entry) => {
-        if (entry.name === STATE_DIRECTORY && entry.isDirectory()) return;
-        if (!entry.isFile()) {
-          runtime.sweepRemaining++;
-          job.lastError = "source-nonregular-entry";
-          return;
-        }
-        const file = path.join(runtime.canonical!, entry.name);
-        const stat = await fs.lstat(file).catch((error) => {
-          if (error.code === "ENOENT") return null;
-          throw error;
-        });
-        if (!stat) return;
-        if (!stat.isFile() || stat.nlink !== 1) {
-          runtime.sweepRemaining++;
-          job.lastError = "source-nonregular-entry";
-          return;
-        }
-        if (!EVENT.test(entry.name) || stat.size > this.limits.maxFileBytes) {
-          await this.quarantine(
-            runtime,
-            entry.name,
-            EVENT.test(entry.name) ? "file-too-large" : "unknown-file",
+    const pass = await this.measure(runtime, "scan", () =>
+      runtime.replay!.pass(
+        async (entry) => {
+          if (entry.name === STATE_DIRECTORY && entry.isDirectory()) return;
+          if (await this.isEmptyLegacyFailedDirectory(runtime, entry)) return;
+          if (!entry.isFile()) {
+            runtime.sweepRemaining++;
+            job.lastError = "source-nonregular-entry";
+            return;
+          }
+          const file = path.join(runtime.canonical!, entry.name);
+          const stat = await fs.lstat(file).catch((error) => {
+            if (error.code === "ENOENT") return null;
+            throw error;
+          });
+          if (!stat) return;
+          if (!stat.isFile() || stat.nlink !== 1) {
+            runtime.sweepRemaining++;
+            job.lastError = "source-nonregular-entry";
+            return;
+          }
+          if (!EVENT.test(entry.name) || stat.size > this.limits.maxFileBytes) {
+            await this.quarantine(
+              runtime,
+              entry.name,
+              EVENT.test(entry.name) ? "file-too-large" : "unknown-file",
+            );
+            job.quarantined++;
+            return;
+          }
+          selected.push({
+            name: entry.name,
+            size: stat.size,
+            inode: stat.ino,
+            modified: stat.mtimeMs,
+          });
+          bytes += stat.size;
+          return (
+            selected.length < this.limits.batchSize &&
+            bytes <= this.limits.maxBatchBytes - this.limits.maxFileBytes
           );
-          job.quarantined++;
-          return;
-        }
-        selected.push({
-          name: entry.name,
-          size: stat.size,
-          inode: stat.ino,
-          modified: stat.mtimeMs,
-        });
-        bytes += stat.size;
-        return (
-          selected.length < this.limits.batchSize &&
-          bytes <= this.limits.maxBatchBytes - this.limits.maxFileBytes
-        );
-      },
-      undefined,
-      () => this.closed || this.commandBusy || !this.options.hasLiveHeadroom(),
+        },
+        undefined,
+        () => !this.mayAdmit(runtime),
+      ),
     );
     job.entriesVisited += pass.entriesVisited;
+    // One following chunk may be prepared while accepted writes drain. The
+    // selected batch bounds both chunks together; never prefetch another pass.
+    const chunkAt = (offset: number) =>
+      selected.slice(offset, offset + this.limits.concurrency);
+    let prepared: PreparedFile[] = [];
+    if (this.mayAdmit(runtime))
+      prepared = await this.prepareChunk(runtime, chunkAt(0));
     for (
       let offset = 0;
       offset < selected.length;
       offset += this.limits.concurrency
     ) {
-      const chunk = selected.slice(offset, offset + this.limits.concurrency);
-      if (
-        this.closed ||
-        this.commandBusy ||
-        !this.options.hasLiveHeadroom() ||
-        !this.options.canWrite()
-      ) {
+      if (!prepared.length || !this.mayAdmit(runtime)) {
         runtime.sweepRemaining += selected.length - offset;
         break;
       }
-      await Promise.all(
-        chunk.map(async (entry) => {
-          job.inFlight++;
-          try {
-            const file = path.join(runtime.canonical!, entry.name);
-            const handle = await fs.open(
-              file,
-              constants.O_RDONLY | constants.O_NOFOLLOW,
-            );
-            let event: LegacyEvent | null = null;
-            let invalid = false;
-            try {
-              const stat = await handle.stat();
-              if (
-                !stat.isFile() ||
-                stat.ino !== entry.inode ||
-                stat.size !== entry.size ||
-                stat.mtimeMs !== entry.modified
-              )
-                fault("source-file-changed");
-              const buffer = Buffer.alloc(entry.size + 1);
-              const read = await handle.read(buffer, 0, buffer.length, 0);
-              if (read.bytesRead !== entry.size) fault("source-file-changed");
-              job.bytesRead += read.bytesRead;
-              try {
-                const parsed = JSON.parse(
-                  buffer.subarray(0, read.bytesRead).toString("utf8"),
-                );
-                if (
-                  !parsed ||
-                  typeof parsed.topic !== "string" ||
-                  !parsed.topic ||
-                  parsed.message === undefined
-                )
-                  invalid = true;
-                else event = parsed;
-              } catch {
-                invalid = true;
-              }
-            } finally {
-              await handle.close();
-            }
-            const result = invalid
-              ? ({
-                  outcome: "quarantined",
-                  reason: "invalid-envelope",
-                } as const)
-              : await this.options.write(event!, { startedAt: job.startedAt! });
-            await this.assertOwner(runtime);
-            await this.validateSource(runtime);
-            const after = await fs.lstat(file);
-            if (
-              after.ino !== entry.inode ||
-              after.size !== entry.size ||
-              after.mtimeMs !== entry.modified
-            )
-              fault("source-file-changed");
-            if (
-              result.outcome === "written" ||
-              result.outcome === "duplicate"
-            ) {
-              await fs.unlink(file);
-              job[result.outcome]++;
-              if (result.outcome === "written") {
-                job.rowsWritten += result.rows ?? 0;
-                if (
-                  result.oldestEventTime &&
-                  (!job.oldestEventTimeSeen ||
-                    result.oldestEventTime < job.oldestEventTimeSeen)
-                )
-                  job.oldestEventTimeSeen = result.oldestEventTime;
-              }
-            } else if (result.outcome === "quarantined") {
-              await this.quarantine(runtime, entry.name, result.reason);
-              job.quarantined++;
-            } else {
-              job.deferred++;
-              runtime.sweepRemaining++;
-              job.lastError = result.reason;
-              runtime.nextRun = Date.now() + 5000;
-            }
-          } catch (error) {
-            runtime.sweepRemaining++;
-            job.lastError = this.errorCode(error);
-            runtime.nextRun = Date.now() + 5000;
-          } finally {
-            job.inFlight--;
-          }
-        }),
+      await this.validateSource(runtime);
+      await this.assertOwner(runtime);
+      if (job.policyDigest !== this.options.policyDigest())
+        fault("storage-policy-changed");
+      if (!this.mayAdmit(runtime)) {
+        runtime.sweepRemaining += selected.length - offset;
+        break;
+      }
+      const current = chunkAt(offset);
+      const next = chunkAt(offset + this.limits.concurrency);
+      const resident = [...current, ...next];
+      runtime.performance.pipeline.maximumResidentFiles = Math.max(
+        runtime.performance.pipeline.maximumResidentFiles,
+        resident.length,
       );
+      runtime.performance.pipeline.maximumResidentFileBytes = Math.max(
+        runtime.performance.pipeline.maximumResidentFileBytes,
+        resident.reduce((sum, entry) => sum + entry.size, 0),
+      );
+      const writing = Promise.all(
+        prepared.map((file) => this.writePrepared(runtime, file)),
+      );
+      // Read promises never reject: even a failed preparation is drained and its
+      // source stays on disk. Pause/close can safely wait for both stages.
+      const following =
+        next.length && this.mayAdmit(runtime)
+          ? this.prepareChunk(runtime, next, true)
+          : Promise.resolve<PreparedFile[]>([]);
+      await writing;
+      prepared = await following;
     }
     if (
       pass.complete &&
@@ -848,9 +1044,10 @@ export class LegacyImportManager {
   private async verifyEmptyPass(runtime: SourceRuntime) {
     const job = runtime.job!;
     const pass = await runtime.verification!.pass(
-      (entry) => {
-        if (entry.name !== STATE_DIRECTORY || !entry.isDirectory())
-          runtime.verificationRemaining++;
+      async (entry) => {
+        if (entry.name === STATE_DIRECTORY && entry.isDirectory()) return;
+        if (await this.isEmptyLegacyFailedDirectory(runtime, entry)) return;
+        runtime.verificationRemaining++;
       },
       undefined,
       () => this.closed || this.commandBusy,
@@ -908,6 +1105,7 @@ export class LegacyImportManager {
       Date.now() + this.limits.intervalMs,
     );
     if (job.state === "completed") await this.release(runtime);
+    runtime.lastPassEndedAt = performance.now();
   }
   private async quarantine(
     runtime: SourceRuntime,
