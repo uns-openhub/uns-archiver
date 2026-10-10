@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { errorMessage, withRetry } from "../resilience.js";
 
 export type QuestDbBatchConfig = {
@@ -22,6 +23,8 @@ export type QuestDbBatchDiagnostics = {
   lastFailureAt: string | null;
   lastFailure: string | null;
   config: ResolvedQuestDbBatchConfig;
+  queueWait: { rows: number; totalMs: number; maximumMs: number };
+  totalFlushDurationMs: number;
 };
 
 export class QuestDbBatchCapacityError extends Error {
@@ -36,6 +39,8 @@ export class QuestDbBatchCapacityError extends Error {
 
 type PendingRow = {
   write: () => Promise<void>;
+  enqueuedAt: number;
+  flushAt: number;
   resolve: () => void;
   reject: (error: unknown) => void;
 };
@@ -99,6 +104,10 @@ export const resolveQuestDbBatchConfig = (
 export class QuestDbIlpBatcher {
   private readonly pending: PendingRow[] = [];
   private timer: ReturnType<typeof setTimeout> | undefined;
+  private timerDueAt = Infinity;
+  private pendingFlushAt = Infinity;
+  private queueWait = { rows: 0, totalMs: 0, maximumMs: 0 };
+  private totalFlushDurationMs = 0;
   private flushInProgress: Promise<void> | undefined;
   private flushingRows = 0;
   private closed = false;
@@ -124,10 +133,26 @@ export class QuestDbIlpBatcher {
   configure(config?: QuestDbBatchConfig): void {
     this.config = resolveQuestDbBatchConfig(config);
     this.clearTimer();
+    for (const row of this.pending) {
+      row.flushAt = Math.min(
+        row.flushAt,
+        row.enqueuedAt + this.config.flushIntervalMs,
+      );
+    }
+    this.pendingFlushAt = this.pending.reduce(
+      (deadline, row) => Math.min(deadline, row.flushAt),
+      Infinity,
+    );
     this.scheduleFlush();
   }
 
-  enqueue(write: () => Promise<void>): Promise<void> {
+  enqueue(write: () => Promise<void>, maxWaitMs?: number): Promise<void> {
+    if (
+      maxWaitMs !== undefined &&
+      (!Number.isFinite(maxWaitMs) || maxWaitMs <= 0)
+    ) {
+      return Promise.reject(new Error("Invalid QuestDB batch wait hint."));
+    }
     if (this.closed) {
       return Promise.reject(new Error("QuestDB ILP batcher is closed."));
     }
@@ -138,7 +163,12 @@ export class QuestDbIlpBatcher {
     }
 
     const completion = new Promise<void>((resolve, reject) => {
-      this.pending.push({ write, resolve, reject });
+      const enqueuedAt = performance.now();
+      const flushAt =
+        enqueuedAt +
+        Math.min(this.config.flushIntervalMs, maxWaitMs ?? Infinity);
+      this.pending.push({ write, resolve, reject, enqueuedAt, flushAt });
+      this.pendingFlushAt = Math.min(this.pendingFlushAt, flushAt);
     });
     this.scheduleFlush();
     return completion;
@@ -159,6 +189,8 @@ export class QuestDbIlpBatcher {
       lastFailureAt: this.lastFailureAt,
       lastFailure: this.lastFailure,
       config: { ...this.config },
+      queueWait: { ...this.queueWait },
+      totalFlushDurationMs: this.totalFlushDurationMs,
     };
   }
 
@@ -180,17 +212,24 @@ export class QuestDbIlpBatcher {
       void this.flushPending();
       return;
     }
-    if (this.timer) return;
-    this.timer = setTimeout(() => {
-      this.timer = undefined;
-      void this.flushPending();
-    }, this.config.flushIntervalMs);
+    if (this.timer && this.timerDueAt <= this.pendingFlushAt) return;
+    this.clearTimer();
+    this.timerDueAt = this.pendingFlushAt;
+    this.timer = setTimeout(
+      () => {
+        this.timer = undefined;
+        this.timerDueAt = Infinity;
+        void this.flushPending();
+      },
+      Math.max(0, this.pendingFlushAt - performance.now()),
+    );
   }
 
   private clearTimer(): void {
     if (!this.timer) return;
     clearTimeout(this.timer);
     this.timer = undefined;
+    this.timerDueAt = Infinity;
   }
 
   private async flushPending(): Promise<void> {
@@ -199,6 +238,17 @@ export class QuestDbIlpBatcher {
 
     this.clearTimer();
     const batch = this.pending.splice(0, this.config.maxRows);
+    this.pendingFlushAt = this.pending.reduce(
+      (deadline, row) => Math.min(deadline, row.flushAt),
+      Infinity,
+    );
+    const now = performance.now();
+    for (const row of batch) {
+      const wait = Math.max(0, now - row.enqueuedAt);
+      this.queueWait.rows++;
+      this.queueWait.totalMs += wait;
+      this.queueWait.maximumMs = Math.max(this.queueWait.maximumMs, wait);
+    }
     this.flushingRows = batch.length;
     let operation: Promise<void>;
     operation = this.flushBatch(batch).finally(() => {
@@ -247,6 +297,7 @@ export class QuestDbIlpBatcher {
 
       if (rows.length === 0) return;
       const durationMs = Date.now() - startedAt;
+      this.totalFlushDurationMs += durationMs;
       this.successfulFlushes += 1;
       this.maxBatchRowsObserved = Math.max(
         this.maxBatchRowsObserved,
@@ -260,6 +311,7 @@ export class QuestDbIlpBatcher {
       this.options.onFlush?.({ rows: rows.length, durationMs });
     } catch (error) {
       const durationMs = Date.now() - startedAt;
+      this.totalFlushDurationMs += durationMs;
       this.failedFlushes += 1;
       this.rejectedRows += rows.length;
       this.lastBatchRows = rows.length;

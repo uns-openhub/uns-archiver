@@ -185,3 +185,81 @@ test("enforces bounded pending rows while an earlier batch is flushing", async (
   assert.equal(batcher.snapshot().queuedRows, 0);
   assert.equal(batcher.snapshot().flushingRows, 0);
 });
+
+test("a replay wait hint flushes a shared partial batch without changing live defaults", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { batcher, flushed, write } = createBatcher({
+    flushIntervalMs: 1000,
+    maxRows: 512,
+    maxPendingRows: 2048,
+  });
+  const live = batcher.enqueue(write("live"));
+  const replay = batcher.enqueue(write("replay"), 25);
+  assert.equal(flushed.length, 0);
+  t.mock.timers.tick(26);
+  await Promise.all([live, replay]);
+  assert.deepEqual(flushed, [["live", "replay"]]);
+  assert.equal(batcher.snapshot().config.flushIntervalMs, 1000);
+  assert.equal(batcher.snapshot().queueWait.rows, 2);
+  assert.ok(batcher.snapshot().queueWait.totalMs >= 0);
+  await batcher.close();
+});
+
+test("a replay hint never postpones an earlier normal deadline", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { batcher, flushed, write } = createBatcher({
+    flushIntervalMs: 10,
+    maxRows: 512,
+  });
+  const live = batcher.enqueue(write("live"));
+  const replay = batcher.enqueue(write("replay"), 25);
+  t.mock.timers.tick(11);
+  await Promise.all([live, replay]);
+  assert.deepEqual(flushed, [["live", "replay"]]);
+  await batcher.close();
+});
+
+test("a due replay batch stays serialized behind an in-flight flush and needs its own ACK", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const firstAck = deferred();
+  let flushes = 0,
+    active = 0,
+    maximum = 0;
+  const { batcher, write } = createBatcher({
+    maxRows: 2,
+    flushIntervalMs: 1000,
+    flush: async () => {
+      active++;
+      maximum = Math.max(maximum, active);
+      if (++flushes === 1) await firstAck.promise;
+      active--;
+      return true;
+    },
+  });
+  const one = batcher.enqueue(write("one")),
+    two = batcher.enqueue(write("two"));
+  let replayDone = false;
+  const replay = batcher.enqueue(write("replay"), 25).then(() => {
+    replayDone = true;
+  });
+  t.mock.timers.tick(26);
+  assert.equal(replayDone, false);
+  firstAck.resolve();
+  await Promise.all([one, two]);
+  t.mock.timers.tick(26);
+  await replay;
+  assert.equal(flushes, 2);
+  assert.equal(maximum, 1);
+  await batcher.close();
+});
+
+test("invalid wait hints admit no row", async () => {
+  const { batcher, write } = createBatcher();
+  for (const hint of [0, -1, NaN, Infinity])
+    await assert.rejects(
+      batcher.enqueue(write("bad"), hint),
+      /Invalid QuestDB batch wait hint/,
+    );
+  assert.equal(batcher.snapshot().queuedRows, 0);
+  await batcher.close();
+});

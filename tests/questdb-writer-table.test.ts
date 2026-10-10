@@ -56,7 +56,9 @@ class FakeQuestDbSender {
 
   async flush(): Promise<void> {
     this.calls.push(["flush"]);
-    await this.onFlush?.(this.calls.filter(([method]) => method === "flush").length);
+    await this.onFlush?.(
+      this.calls.filter(([method]) => method === "flush").length,
+    );
   }
 
   reset(): this {
@@ -69,7 +71,9 @@ class FakeQuestDbSender {
 
 test("writes canonical object columns while preserving symbol and UoM behavior", async () => {
   const sender = new FakeQuestDbSender();
-  const writer = new QuestDBWriter(sender as unknown as Sender, undefined, { maxRows: 1 });
+  const writer = new QuestDBWriter(sender as unknown as Sender, undefined, {
+    maxRows: 1,
+  });
 
   await writer.writeUnsPacket(
     {
@@ -108,21 +112,48 @@ test("writes canonical object columns while preserving symbol and UoM behavior",
   );
 
   assert.ok(stateSymbolIndex >= 0);
-  assert.ok(firstFieldIndex > stateSymbolIndex, "symbol columns must be written before fields");
+  assert.ok(
+    firstFieldIndex > stateSymbolIndex,
+    "symbol columns must be written before fields",
+  );
   assert.ok(
     sender.calls.some(
       ([method, name, value]) =>
         method === "floatColumn" && name === "power" && value === 42.1,
     ),
   );
-  assert.ok(sender.calls.some(([method, name, value]) =>
-    method === "symbol" && name === "stableEntityId" && value === "11111111-1111-4111-8111-111111111111"));
-  assert.ok(sender.calls.some(([method, name, value]) =>
-    method === "symbol" && name === "identityBindingRevision" && value === "8"));
-  assert.ok(sender.calls.some(([method, name, value]) =>
-    method === "stringColumn" && name === "identityBindingDigest" && value === `sha256:${"1".repeat(64)}`));
-  assert.ok(sender.calls.some(([method, name, value]) =>
-    method === "stringColumn" && name === "fullTopic" && value === "plant/line-1/equipment/main/measurements"));
+  assert.ok(
+    sender.calls.some(
+      ([method, name, value]) =>
+        method === "symbol" &&
+        name === "stableEntityId" &&
+        value === "11111111-1111-4111-8111-111111111111",
+    ),
+  );
+  assert.ok(
+    sender.calls.some(
+      ([method, name, value]) =>
+        method === "symbol" &&
+        name === "identityBindingRevision" &&
+        value === "8",
+    ),
+  );
+  assert.ok(
+    sender.calls.some(
+      ([method, name, value]) =>
+        method === "stringColumn" &&
+        name === "identityBindingDigest" &&
+        value === `sha256:${"1".repeat(64)}`,
+    ),
+  );
+  assert.ok(
+    sender.calls.some(
+      ([method, name, value]) =>
+        method === "stringColumn" &&
+        name === "fullTopic" &&
+        value === "plant/line-1/equipment/main/measurements",
+    ),
+  );
   assert.ok(
     sender.calls.some(
       ([method, name, value]) =>
@@ -135,7 +166,10 @@ test("writes canonical object columns while preserving symbol and UoM behavior",
         method === "stringColumn" && name === "note" && value === "stable",
     ),
   );
-  assert.equal(sender.calls.some(([, name]) => name === "optional"), false);
+  assert.equal(
+    sender.calls.some(([, name]) => name === "optional"),
+    false,
+  );
   assert.equal(sender.calls.at(-1)?.[0], "flush");
 });
 
@@ -192,10 +226,30 @@ test("batches data and table rows through one shared sender without interleaving
     );
   }
   assert.equal(sender.calls.filter(([method]) => method === "flush").length, 1);
-  assert.ok(sender.calls.some(([method, name, value]) => method === "floatColumn" && name === "value" && value === 12.5));
-  assert.ok(sender.calls.some(([method, name, value]) => method === "stringColumn" && name === "uom" && value === "bar"));
-  assert.ok(sender.calls.some(([method, name, value]) => method === "symbol" && name === "state" && value === "RUNNING"));
-  assert.ok(sender.calls.some(([method, name, value]) => method === "floatColumn" && name === "power" && value === 42.1));
+  assert.ok(
+    sender.calls.some(
+      ([method, name, value]) =>
+        method === "floatColumn" && name === "value" && value === 12.5,
+    ),
+  );
+  assert.ok(
+    sender.calls.some(
+      ([method, name, value]) =>
+        method === "stringColumn" && name === "uom" && value === "bar",
+    ),
+  );
+  assert.ok(
+    sender.calls.some(
+      ([method, name, value]) =>
+        method === "symbol" && name === "state" && value === "RUNNING",
+    ),
+  );
+  assert.ok(
+    sender.calls.some(
+      ([method, name, value]) =>
+        method === "floatColumn" && name === "power" && value === 42.1,
+    ),
+  );
 });
 
 test("uses the shared batch limit before a single table can build an unbounded write chain", async () => {
@@ -217,12 +271,54 @@ test("uses the shared batch limit before a single table can build an unbounded w
       message: { data: { time, value: 1 } },
     }) as never;
 
-  const first = writer.writeUnsPacket(packet("2026-07-19T12:00:00.000Z"), "uns_measurements", "plant/a/b/c/one");
+  const first = writer.writeUnsPacket(
+    packet("2026-07-19T12:00:00.000Z"),
+    "uns_measurements",
+    "plant/a/b/c/one",
+  );
   await new Promise((resolve) => setImmediate(resolve));
-  const second = writer.writeUnsPacket(packet("2026-07-19T12:00:01.000Z"), "uns_measurements", "plant/a/b/c/two");
-  const overflow = writer.writeUnsPacket(packet("2026-07-19T12:00:02.000Z"), "uns_measurements", "plant/a/b/c/three");
+  const second = writer.writeUnsPacket(
+    packet("2026-07-19T12:00:01.000Z"),
+    "uns_measurements",
+    "plant/a/b/c/two",
+  );
+  const overflow = writer.writeUnsPacket(
+    packet("2026-07-19T12:00:02.000Z"),
+    "uns_measurements",
+    "plant/a/b/c/three",
+  );
 
   await assert.rejects(overflow, /QuestDB ILP batch queue is full/);
   resolveFirstFlush?.();
   await Promise.all([first, second]);
+});
+
+test("legacy batch hint reaches both data and table submissions and still waits for ACK", async () => {
+  const sender = new FakeQuestDbSender();
+  const writer = new QuestDBWriter(sender as unknown as Sender, undefined, {
+    maxRows: 512,
+    flushIntervalMs: 1000,
+  });
+  await writer.writeUnsPacket(
+    {
+      version: "2.0.0",
+      message: {
+        data: { value: 7, time: "2026-07-19T12:00:00Z" },
+        table: {
+          time: "2026-07-19T12:00:00Z",
+          columns: { state: { type: "string", value: "READY" } },
+        },
+      },
+    } as never,
+    "fixture_speed",
+    "fixture/motor",
+    undefined,
+    undefined,
+    undefined,
+    { maxBatchWaitMs: 5 },
+  );
+  assert.equal(sender.calls.filter((c) => c[0] === "flush").length, 2);
+  assert.equal(writer.getBatchDiagnostics().queueWait.rows, 2);
+  assert.equal(writer.getBatchDiagnostics().config.flushIntervalMs, 1000);
+  await writer.close();
 });

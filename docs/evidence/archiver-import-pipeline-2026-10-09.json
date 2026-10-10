@@ -1,0 +1,924 @@
+{
+  "date": "2026-10-09",
+  "slice": "P4d",
+  "status": "PASS within local bounded scope",
+  "archiver": {
+    "version": "5.2.20",
+    "baseCommit": "79d6dba",
+    "kitVersion": "3.0.23",
+    "changesCommitted": false,
+    "releasePublished": false,
+    "referenceImporterSha256": "12edc919be84511bf88b78e50ab13f47f2eab2dcbf6d1e8947504111ec1951f5",
+    "candidateImporterSha256": "66048755d8244c4fdf4e06475215b6fe43d613b152b46d3aa2b30636f87c7d77",
+    "candidateDistSha256": "e03c43cd7eb6e0e984d48de6ddd552e1c6c8ea511fb2e96027433db40099e5a0",
+    "installedDistSha256": "e03c43cd7eb6e0e984d48de6ddd552e1c6c8ea511fb2e96027433db40099e5a0"
+  },
+  "settings": {
+    "batchSize": 128,
+    "concurrency": 64,
+    "intervalMs": 100,
+    "legacyMaxBatchWaitMs": 25,
+    "comparisonWriter": {
+      "maxRows": 512,
+      "maxPendingRows": 2048,
+      "flushIntervalMs": 1000
+    },
+    "runtimeWriter": {
+      "maxRows": 32,
+      "maxPendingRows": 256,
+      "flushIntervalMs": 100
+    }
+  },
+  "comparisons": [
+    {
+      "eventCount": 4096,
+      "reference": {
+        "scope": "real-files-and-QuestDB-modules",
+        "excludes": [
+          "full-runtime",
+          "production-scale"
+        ],
+        "profile": "bounded-fast",
+        "eventCount": 4096,
+        "elapsedImportMs": 6364.429958,
+        "filesPerSecond": 643.5768838733758,
+        "verifiedRows": 4096,
+        "duplicateRows": 0,
+        "timestampMismatches": 0,
+        "maximumSampledRssBytes": 186466304,
+        "eventLoopDelayMaxMs": 14.794751,
+        "statusHelperMaxMs": 0.1694999999999709,
+        "writer": {
+          "queuedRows": 0,
+          "flushingRows": 0,
+          "successfulFlushes": 64,
+          "failedFlushes": 0,
+          "retriedFlushes": 0,
+          "rejectedRows": 0,
+          "maxBatchRowsObserved": 64,
+          "lastBatchRows": 64,
+          "lastFlushDurationMs": 3,
+          "lastFlushAt": "2026-10-09T21:14:33.844Z",
+          "lastFailureAt": null,
+          "lastFailure": null,
+          "config": {
+            "flushIntervalMs": 1000,
+            "maxRows": 512,
+            "maxPendingRows": 2048
+          },
+          "queueWait": {
+            "rows": 4096,
+            "totalMs": 100730.48739500015,
+            "maximumMs": 26.494957999999997
+          },
+          "totalFlushDurationMs": 269
+        },
+        "importer": {
+          "sourceId": "old",
+          "loaded": true,
+          "ownership": "unclaimed",
+          "error": null,
+          "inspection": {
+            "events": null,
+            "processing": null,
+            "other": null,
+            "entriesVisited": 0,
+            "scanComplete": false,
+            "countKind": "unknown",
+            "capturedAt": null,
+            "error": null
+          },
+          "quarantinePresent": false,
+          "drainRate": {
+            "acknowledgedFilesPerSecond": 0,
+            "rowsPerSecond": 0,
+            "measuredAt": "2026-10-09T21:14:33.972Z"
+          },
+          "performance": {
+            "phases": {
+              "scan": {
+                "count": 33,
+                "totalMs": 101.9670810000008,
+                "maximumMs": 7.474874999999884
+              },
+              "readParse": {
+                "count": 4096,
+                "totalMs": 7676.778364999993,
+                "maximumMs": 3.5287089999999353
+              },
+              "writeAck": {
+                "count": 4096,
+                "totalMs": 119247.0007230003,
+                "maximumMs": 46.398750000000064
+              },
+              "finalize": {
+                "count": 4096,
+                "totalMs": 18009.168655,
+                "maximumMs": 14.82466599999998
+              },
+              "checkpoint": {
+                "count": 34,
+                "totalMs": 510.38074799999833,
+                "maximumMs": 20.622249999999894
+              }
+            },
+            "passes": 33,
+            "betweenPassIdleMs": 3403.4379599999993
+          },
+          "job": {
+            "id": "e1f4525a-6afb-4eab-8e3a-3ce098f5c894",
+            "sourceId": "old",
+            "revision": 1,
+            "state": "completed",
+            "written": 4096,
+            "duplicate": 0,
+            "quarantined": 0,
+            "deferred": 0,
+            "bytesRead": 625578,
+            "entriesVisited": 4097,
+            "rowsWritten": 4096,
+            "oldestEventTimeSeen": "2026-07-19T12:00:00.000Z",
+            "inFlight": 0,
+            "startedAt": "2026-10-09T21:14:27.616Z",
+            "updatedAt": "2026-10-09T21:14:33.973Z",
+            "lastError": null
+          }
+        }
+      },
+      "pipeline": {
+        "scope": "real-files-and-QuestDB-modules",
+        "excludes": [
+          "full-runtime",
+          "production-scale"
+        ],
+        "profile": "bounded-fast",
+        "eventCount": 4096,
+        "elapsedImportMs": 6265.119916,
+        "filesPerSecond": 653.7783881102652,
+        "verifiedRows": 4096,
+        "duplicateRows": 0,
+        "timestampMismatches": 0,
+        "maximumSampledRssBytes": 184598528,
+        "eventLoopDelayMaxMs": 15.941631,
+        "statusHelperMaxMs": 0.13133299999981318,
+        "writer": {
+          "queuedRows": 0,
+          "flushingRows": 0,
+          "successfulFlushes": 64,
+          "failedFlushes": 0,
+          "retriedFlushes": 0,
+          "rejectedRows": 0,
+          "maxBatchRowsObserved": 64,
+          "lastBatchRows": 64,
+          "lastFlushDurationMs": 3,
+          "lastFlushAt": "2026-10-09T21:17:04.414Z",
+          "lastFailureAt": null,
+          "lastFailure": null,
+          "config": {
+            "flushIntervalMs": 1000,
+            "maxRows": 512,
+            "maxPendingRows": 2048
+          },
+          "queueWait": {
+            "rows": 4096,
+            "totalMs": 100199.54836600019,
+            "maximumMs": 26.7326250000001
+          },
+          "totalFlushDurationMs": 252
+        },
+        "importer": {
+          "sourceId": "old",
+          "loaded": true,
+          "ownership": "unclaimed",
+          "error": null,
+          "inspection": {
+            "events": null,
+            "processing": null,
+            "other": null,
+            "entriesVisited": 0,
+            "scanComplete": false,
+            "countKind": "unknown",
+            "capturedAt": null,
+            "error": null
+          },
+          "quarantinePresent": false,
+          "drainRate": {
+            "acknowledgedFilesPerSecond": 0,
+            "rowsPerSecond": 0,
+            "measuredAt": "2026-10-09T21:17:04.543Z"
+          },
+          "performance": {
+            "phases": {
+              "scan": {
+                "count": 33,
+                "totalMs": 103.30746300000033,
+                "maximumMs": 8.615999999999985
+              },
+              "readParse": {
+                "count": 4096,
+                "totalMs": 8658.07867799998,
+                "maximumMs": 3.538915999999972
+              },
+              "writeAck": {
+                "count": 4096,
+                "totalMs": 117632.21168600017,
+                "maximumMs": 47.53466700000001
+              },
+              "finalize": {
+                "count": 4096,
+                "totalMs": 17759.59802999997,
+                "maximumMs": 9.235500000000002
+              },
+              "checkpoint": {
+                "count": 34,
+                "totalMs": 458.06329300000095,
+                "maximumMs": 20.561333999999988
+              }
+            },
+            "passes": 33,
+            "betweenPassIdleMs": 3371.2027059999996,
+            "pipeline": {
+              "readAheadChunks": 32,
+              "maximumResidentFiles": 128,
+              "maximumResidentFileBytes": 19559
+            }
+          },
+          "job": {
+            "id": "bed8036d-0402-4819-8f0e-62e166deee52",
+            "sourceId": "old",
+            "revision": 1,
+            "state": "completed",
+            "written": 4096,
+            "duplicate": 0,
+            "quarantined": 0,
+            "deferred": 0,
+            "bytesRead": 625578,
+            "entriesVisited": 4097,
+            "rowsWritten": 4096,
+            "oldestEventTimeSeen": "2026-07-19T12:00:00.000Z",
+            "inFlight": 0,
+            "startedAt": "2026-10-09T21:16:58.290Z",
+            "updatedAt": "2026-10-09T21:17:04.544Z",
+            "lastError": null
+          }
+        }
+      },
+      "elapsedReductionPercent": 1.560391781437842
+    },
+    {
+      "eventCount": 20000,
+      "reference": {
+        "scope": "real-files-and-QuestDB-modules",
+        "excludes": [
+          "full-runtime",
+          "production-scale"
+        ],
+        "profile": "bounded-fast",
+        "eventCount": 20000,
+        "elapsedImportMs": 30755.046625000003,
+        "filesPerSecond": 650.2997782400532,
+        "verifiedRows": 20000,
+        "duplicateRows": 0,
+        "timestampMismatches": 0,
+        "maximumSampledRssBytes": 183992320,
+        "eventLoopDelayMaxMs": 22.937599,
+        "statusHelperMaxMs": 0.631334000001516,
+        "writer": {
+          "queuedRows": 0,
+          "flushingRows": 0,
+          "successfulFlushes": 313,
+          "failedFlushes": 0,
+          "retriedFlushes": 0,
+          "rejectedRows": 0,
+          "maxBatchRowsObserved": 64,
+          "lastBatchRows": 32,
+          "lastFlushDurationMs": 4,
+          "lastFlushAt": "2026-10-09T21:17:46.101Z",
+          "lastFailureAt": null,
+          "lastFailure": null,
+          "config": {
+            "flushIntervalMs": 1000,
+            "maxRows": 512,
+            "maxPendingRows": 2048
+          },
+          "queueWait": {
+            "rows": 20000,
+            "totalMs": 490476.3838040005,
+            "maximumMs": 28.375041999999667
+          },
+          "totalFlushDurationMs": 1227
+        },
+        "importer": {
+          "sourceId": "old",
+          "loaded": true,
+          "ownership": "unclaimed",
+          "error": null,
+          "inspection": {
+            "events": null,
+            "processing": null,
+            "other": null,
+            "entriesVisited": 0,
+            "scanComplete": false,
+            "countKind": "unknown",
+            "capturedAt": null,
+            "error": null
+          },
+          "quarantinePresent": false,
+          "drainRate": {
+            "acknowledgedFilesPerSecond": 207.7922077922078,
+            "rowsPerSecond": 207.7922077922078,
+            "measuredAt": "2026-10-09T21:17:46.106Z"
+          },
+          "performance": {
+            "phases": {
+              "scan": {
+                "count": 157,
+                "totalMs": 437.86067399999774,
+                "maximumMs": 8.635624999998981
+              },
+              "readParse": {
+                "count": 20000,
+                "totalMs": 50611.141183999825,
+                "maximumMs": 5.976542000000336
+              },
+              "writeAck": {
+                "count": 20000,
+                "totalMs": 572077.268920003,
+                "maximumMs": 50.24937499999942
+              },
+              "finalize": {
+                "count": 20000,
+                "totalMs": 83093.8737100003,
+                "maximumMs": 19.794582999998966
+              },
+              "checkpoint": {
+                "count": 158,
+                "totalMs": 2259.285745999993,
+                "maximumMs": 30.362166999999317
+              }
+            },
+            "passes": 157,
+            "betweenPassIdleMs": 16572.328124
+          },
+          "job": {
+            "id": "0db5515e-4aef-4b09-94b5-51d4229595e0",
+            "sourceId": "old",
+            "revision": 1,
+            "state": "completed",
+            "written": 20000,
+            "duplicate": 0,
+            "quarantined": 0,
+            "deferred": 0,
+            "bytesRead": 3068890,
+            "entriesVisited": 20001,
+            "rowsWritten": 20000,
+            "oldestEventTimeSeen": "2026-07-19T12:00:00.000Z",
+            "inFlight": 0,
+            "startedAt": "2026-10-09T21:17:15.364Z",
+            "updatedAt": "2026-10-09T21:17:46.106Z",
+            "lastError": null
+          }
+        }
+      },
+      "pipeline": {
+        "scope": "real-files-and-QuestDB-modules",
+        "excludes": [
+          "full-runtime",
+          "production-scale"
+        ],
+        "profile": "bounded-fast",
+        "eventCount": 20000,
+        "elapsedImportMs": 30516.194167,
+        "filesPerSecond": 655.3897216196068,
+        "verifiedRows": 20000,
+        "duplicateRows": 0,
+        "timestampMismatches": 0,
+        "maximumSampledRssBytes": 188596224,
+        "eventLoopDelayMaxMs": 15.073279,
+        "statusHelperMaxMs": 0.2582079999992857,
+        "writer": {
+          "queuedRows": 0,
+          "flushingRows": 0,
+          "successfulFlushes": 313,
+          "failedFlushes": 0,
+          "retriedFlushes": 0,
+          "rejectedRows": 0,
+          "maxBatchRowsObserved": 64,
+          "lastBatchRows": 32,
+          "lastFlushDurationMs": 3,
+          "lastFlushAt": "2026-10-09T21:18:21.978Z",
+          "lastFailureAt": null,
+          "lastFailure": null,
+          "config": {
+            "flushIntervalMs": 1000,
+            "maxRows": 512,
+            "maxPendingRows": 2048
+          },
+          "queueWait": {
+            "rows": 20000,
+            "totalMs": 491655.3894460032,
+            "maximumMs": 26.669166000003315
+          },
+          "totalFlushDurationMs": 1099
+        },
+        "importer": {
+          "sourceId": "old",
+          "loaded": true,
+          "ownership": "unclaimed",
+          "error": null,
+          "inspection": {
+            "events": null,
+            "processing": null,
+            "other": null,
+            "entriesVisited": 0,
+            "scanComplete": false,
+            "countKind": "unknown",
+            "capturedAt": null,
+            "error": null
+          },
+          "quarantinePresent": false,
+          "drainRate": {
+            "acknowledgedFilesPerSecond": 202.53164556962025,
+            "rowsPerSecond": 202.53164556962025,
+            "measuredAt": "2026-10-09T21:18:21.983Z"
+          },
+          "performance": {
+            "phases": {
+              "scan": {
+                "count": 157,
+                "totalMs": 519.3915819999997,
+                "maximumMs": 12.687665999999808
+              },
+              "readParse": {
+                "count": 20000,
+                "totalMs": 45412.96198999988,
+                "maximumMs": 5.789583000001585
+              },
+              "writeAck": {
+                "count": 20000,
+                "totalMs": 565587.5796429972,
+                "maximumMs": 42.073917000000165
+              },
+              "finalize": {
+                "count": 20000,
+                "totalMs": 83675.96485400069,
+                "maximumMs": 20.78545899999972
+              },
+              "checkpoint": {
+                "count": 158,
+                "totalMs": 2269.19925399998,
+                "maximumMs": 52.21666700000014
+              }
+            },
+            "passes": 157,
+            "betweenPassIdleMs": 16532.935748000007,
+            "pipeline": {
+              "readAheadChunks": 156,
+              "maximumResidentFiles": 128,
+              "maximumResidentFileBytes": 19660
+            }
+          },
+          "job": {
+            "id": "00d37221-9346-4857-832a-fb437b7d9837",
+            "sourceId": "old",
+            "revision": 1,
+            "state": "completed",
+            "written": 20000,
+            "duplicate": 0,
+            "quarantined": 0,
+            "deferred": 0,
+            "bytesRead": 3068890,
+            "entriesVisited": 20001,
+            "rowsWritten": 20000,
+            "oldestEventTimeSeen": "2026-07-19T12:00:00.000Z",
+            "inFlight": 0,
+            "startedAt": "2026-10-09T21:17:51.477Z",
+            "updatedAt": "2026-10-09T21:18:21.983Z",
+            "lastError": null
+          }
+        }
+      },
+      "elapsedReductionPercent": 0.776628502347465
+    }
+  ],
+  "slowAckOutagePauseRestart": {
+    "scope": "real-QuestDB-HTTP-ILP-and-production-importer-modules",
+    "excludes": [
+      "full-runtime-API",
+      "MQTT-handover",
+      "5.2.17-upgrade",
+      "production-scale"
+    ],
+    "eventCount": 2000,
+    "importHint": true,
+    "pipeline": true,
+    "table": "p4_import_2d6532aa735d4751a285bb3e88f34b9d_data",
+    "tableProvisioning": "explicit-existing-time-column-contract",
+    "readAheadDuringSlowAck": {
+      "readAheadChunks": 1,
+      "maximumResidentFiles": 128,
+      "maximumResidentFileBytes": 20791
+    },
+    "pauseDuringSlowFlushMs": 8.147209000000089,
+    "slowFlush": {
+      "acknowledgedFiles": 64,
+      "immediateRows": 0,
+      "visibleRows": 64,
+      "readVisibilityDelayMs": 103.95462499999996
+    },
+    "outage": {
+      "durationMs": 7281.954041000001,
+      "failedRequests": 35,
+      "deferred": 128,
+      "acknowledgedFilesUnchanged": true
+    },
+    "restartRemainedPaused": true,
+    "result": "PASS",
+    "elapsedRecoveryImportMs": 20576.053249999997,
+    "verifiedRows": 2000,
+    "timestampMismatches": 0,
+    "duplicateRows": 0,
+    "residualSourceEvents": 0,
+    "importer": {
+      "id": "9348756d-fb76-424a-ae59-02e852ca54d4",
+      "sourceId": "old",
+      "revision": 5,
+      "state": "completed",
+      "written": 2000,
+      "duplicate": 0,
+      "quarantined": 0,
+      "deferred": 512,
+      "bytesRead": 418459,
+      "entriesVisited": 2578,
+      "rowsWritten": 2000,
+      "oldestEventTimeSeen": "2026-07-19T12:00:00.000Z",
+      "inFlight": 0,
+      "startedAt": "2026-10-09T21:18:30.586Z",
+      "updatedAt": "2026-10-09T21:18:58.932Z",
+      "lastError": null
+    },
+    "performance": {
+      "phases": {
+        "scan": {
+          "count": 20,
+          "totalMs": 48.341129000002184,
+          "maximumMs": 5.967375000000175
+        },
+        "readParse": {
+          "count": 2320,
+          "totalMs": 5800.3674079999455,
+          "maximumMs": 3.965374999999767
+        },
+        "writeAck": {
+          "count": 2320,
+          "totalMs": 199291.00264899997,
+          "maximumMs": 410.9670839999999
+        },
+        "finalize": {
+          "count": 2320,
+          "totalMs": 9330.705760999948,
+          "maximumMs": 11.610749999999825
+        },
+        "checkpoint": {
+          "count": 21,
+          "totalMs": 238.19179299999996,
+          "maximumMs": 15.454458000000159
+        }
+      },
+      "passes": 20,
+      "betweenPassIdleMs": 16783.089792,
+      "pipeline": {
+        "readAheadChunks": 18,
+        "maximumResidentFiles": 128,
+        "maximumResidentFileBytes": 20800
+      }
+    },
+    "writer": {
+      "queuedRows": 0,
+      "flushingRows": 0,
+      "successfulFlushes": 32,
+      "failedFlushes": 8,
+      "retriedFlushes": 16,
+      "rejectedRows": 512,
+      "maxBatchRowsObserved": 64,
+      "lastBatchRows": 64,
+      "lastFlushDurationMs": 4,
+      "lastFlushAt": "2026-10-09T21:18:58.816Z",
+      "lastFailureAt": "2026-10-09T21:18:50.913Z",
+      "lastFailure": null,
+      "config": {
+        "flushIntervalMs": 1000,
+        "maxRows": 512,
+        "maxPendingRows": 2048
+      },
+      "queueWait": {
+        "rows": 2512,
+        "totalMs": 61802.31775900017,
+        "maximumMs": 26.227332999998907
+      },
+      "totalFlushDurationMs": 9685
+    },
+    "maximumRssBytes": 184057856,
+    "eventLoopDelayMaxMs": 16.072703,
+    "statusHelperSamples": 2511,
+    "statusHelperP99Ms": 0.18724999999903957
+  },
+  "authenticatedRuntimeImportWithLiveMqtt": {
+    "scope": "full-local-archiver-authenticated-runtime",
+    "importedFiles": 2000,
+    "liveEvents": 100,
+    "verifiedTotalRows": 5050,
+    "duplicateIds": 0,
+    "timeMismatches": 0,
+    "publicProxyHttp": 200,
+    "elapsedImportAndVerificationMs": 2569.8694579999974,
+    "liveDurationAndVerificationMs": 2570.1980410000033,
+    "statusHttpMaximumMs": 1.9570839999978489,
+    "liveRowsVisibleWhileImporting": true,
+    "source": {
+      "sourceId": "p4d-sealed",
+      "loaded": true,
+      "ownership": "unclaimed",
+      "error": null,
+      "inspection": {
+        "events": null,
+        "processing": null,
+        "other": null,
+        "entriesVisited": 0,
+        "scanComplete": false,
+        "countKind": "unknown",
+        "capturedAt": null,
+        "error": null
+      },
+      "quarantinePresent": false,
+      "drainRate": {
+        "acknowledgedFilesPerSecond": 512.8205128205128,
+        "rowsPerSecond": 512.8205128205128,
+        "measuredAt": "2026-10-09T21:19:28.079Z"
+      },
+      "performance": {
+        "phases": {
+          "scan": {
+            "count": 16,
+            "totalMs": 34.38837299999432,
+            "maximumMs": 7.985082999999577
+          },
+          "readParse": {
+            "count": 2000,
+            "totalMs": 5685.196844000035,
+            "maximumMs": 6.567166999997426
+          },
+          "writeAck": {
+            "count": 2000,
+            "totalMs": 7368.379620000043,
+            "maximumMs": 30.335583000000042
+          },
+          "finalize": {
+            "count": 2000,
+            "totalMs": 5116.7887280000905,
+            "maximumMs": 4.870958999999857
+          },
+          "checkpoint": {
+            "count": 17,
+            "totalMs": 237.1123749999897,
+            "maximumMs": 17.883374999997613
+          }
+        },
+        "passes": 16,
+        "betweenPassIdleMs": 1507.796500000004,
+        "pipeline": {
+          "readAheadChunks": 16,
+          "maximumResidentFiles": 128,
+          "maximumResidentFileBytes": 25984
+        }
+      },
+      "job": {
+        "id": "a1200185-0486-4947-88be-2abafb013df3",
+        "sourceId": "p4d-sealed",
+        "revision": 1,
+        "state": "completed",
+        "written": 2000,
+        "duplicate": 0,
+        "quarantined": 0,
+        "deferred": 0,
+        "bytesRead": 406000,
+        "entriesVisited": 2001,
+        "rowsWritten": 2000,
+        "oldestEventTimeSeen": "2026-10-01T12:49:10.000Z",
+        "inFlight": 0,
+        "startedAt": "2026-10-09T21:19:25.667Z",
+        "updatedAt": "2026-10-09T21:19:28.079Z",
+        "lastError": null
+      }
+    },
+    "writer": {
+      "queuedRows": 0,
+      "flushingRows": 0,
+      "successfulFlushes": 91,
+      "failedFlushes": 0,
+      "retriedFlushes": 0,
+      "rejectedRows": 0,
+      "maxBatchRowsObserved": 32,
+      "lastBatchRows": 16,
+      "lastFlushDurationMs": 3,
+      "lastFlushAt": "2026-10-09T21:19:28.078Z",
+      "lastFailureAt": null,
+      "lastFailure": null,
+      "config": {
+        "flushIntervalMs": 100,
+        "maxRows": 32,
+        "maxPendingRows": 256
+      },
+      "queueWait": {
+        "rows": 2100,
+        "totalMs": 6945.823019999767,
+        "maximumMs": 101.15270800000144
+      },
+      "totalFlushDurationMs": 204
+    }
+  },
+  "autonomousImportShutdown": {
+    "scope": "full-local-runtime-legacy-batch-in-flight-without-controller",
+    "controllerAbsent": true,
+    "acceptedWritesBeforeSignal": 64,
+    "preparedFilesBeforeSignal": 128,
+    "sourceFilesBeforeAck": 256,
+    "waitedForHeldQuestDbAck": true,
+    "exitDetectedMs": 251.58095899999898,
+    "process": {
+      "pid": 0,
+      "status": "stopped",
+      "exitCode": 0,
+      "restarts": 0
+    },
+    "checkpoint": {
+      "state": "paused",
+      "lastError": "shutdown-review-required",
+      "written": 64,
+      "revision": 1
+    },
+    "retainedSourceEvents": 192
+  },
+  "restoredExactSqlOracle": {
+    "rows": 5306,
+    "uniqueIds": 5306,
+    "missingIds": 0,
+    "duplicateIds": 0,
+    "timeMismatches": 0,
+    "remainedPausedAfterControllerRestore": true,
+    "explicitResumeSucceeded": true,
+    "completedJobs": 4,
+    "publicProxyHttp": 200,
+    "source": {
+      "sourceId": "p4d-drain",
+      "loaded": true,
+      "ownership": "unclaimed",
+      "error": null,
+      "inspection": {
+        "events": null,
+        "processing": null,
+        "other": null,
+        "entriesVisited": 0,
+        "scanComplete": false,
+        "countKind": "unknown",
+        "capturedAt": null,
+        "error": null
+      },
+      "quarantinePresent": false,
+      "drainRate": {
+        "acknowledgedFilesPerSecond": 512,
+        "rowsPerSecond": 512,
+        "measuredAt": "2026-10-09T21:21:47.885Z"
+      },
+      "performance": {
+        "phases": {
+          "scan": {
+            "count": 2,
+            "totalMs": 3.1829579999975977,
+            "maximumMs": 2.3451249999998254
+          },
+          "readParse": {
+            "count": 192,
+            "totalMs": 920.079249999988,
+            "maximumMs": 7.54620900000009
+          },
+          "writeAck": {
+            "count": 192,
+            "totalMs": 1424.4579529999828,
+            "maximumMs": 9.420249999995576
+          },
+          "finalize": {
+            "count": 192,
+            "totalMs": 514.9825020000062,
+            "maximumMs": 4.3411249999990105
+          },
+          "checkpoint": {
+            "count": 3,
+            "totalMs": 32.44333299998834,
+            "maximumMs": 12.443874999997206
+          }
+        },
+        "passes": 2,
+        "betweenPassIdleMs": 100.41950000000361,
+        "pipeline": {
+          "readAheadChunks": 1,
+          "maximumResidentFiles": 128,
+          "maximumResidentFileBytes": 25984
+        }
+      },
+      "job": {
+        "id": "0317003c-0fa9-4810-8fdf-b00e999bee5f",
+        "sourceId": "p4d-drain",
+        "revision": 2,
+        "state": "completed",
+        "written": 256,
+        "duplicate": 0,
+        "quarantined": 0,
+        "deferred": 0,
+        "bytesRead": 64960,
+        "entriesVisited": 322,
+        "rowsWritten": 256,
+        "oldestEventTimeSeen": "2026-10-01T13:24:10.000Z",
+        "inFlight": 0,
+        "startedAt": "2026-10-09T21:20:34.090Z",
+        "updatedAt": "2026-10-09T21:21:47.885Z",
+        "lastError": null
+      }
+    },
+    "processes": {
+      "GetRttNodes": [
+        {
+          "rttNode": "uns-archiver",
+          "versions": [
+            {
+              "version": "v5.2.20",
+              "instances": [
+                {
+                  "id": "p4b-test",
+                  "processName": "uns-archiver",
+                  "desiredRunning": true,
+                  "processes": [
+                    {
+                      "pid": 19105,
+                      "status": "online",
+                      "restarts": 0
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "version": "v5.2.17",
+              "instances": [
+                {
+                  "id": "p4b-test",
+                  "processName": "uns-archiver",
+                  "desiredRunning": false,
+                  "processes": [
+                    {
+                      "pid": 0,
+                      "status": "stopped",
+                      "restarts": 0
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "processes": [
+            {
+              "pid": 0,
+              "version": "v5.2.17",
+              "instanceId": "p4b-test",
+              "status": "stopped",
+              "restarts": 0
+            },
+            {
+              "pid": 19105,
+              "version": "v5.2.20",
+              "instanceId": "p4b-test",
+              "status": "online",
+              "restarts": 0
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "verification": {
+    "tests": 165,
+    "failed": 0,
+    "typecheck": "PASS",
+    "productionBuild": "PASS",
+    "standaloneScriptsStrictTypecheck": "PASS",
+    "diffCheck": "PASS"
+  },
+  "limitations": [
+    "Sequential local runs; below 2 percent measured difference does not establish a significant capacity gain.",
+    "No physical 50M-file import or production filesystem latency evidence.",
+    "Module RSS includes harness work and SQL verification; source byte cap is not a total RSS cap.",
+    "No browser interaction in this slice; normal authenticated API and public proxy were exercised.",
+    "Exactly once is not guaranteed across a crash between DB ACK and source unlink/checkpoint.",
+    "P2 API caller/SQL acceptance and production volume/cutover preflight remain open."
+  ]
+}

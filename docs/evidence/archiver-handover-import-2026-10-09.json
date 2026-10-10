@@ -1,0 +1,313 @@
+{
+  "baseline": {
+    "baselineRows": 100,
+    "sourceBacklog": 100,
+    "oldProcess": {
+      "GetRttNodes": [
+        {
+          "rttNode": "uns-archiver",
+          "versions": [
+            {
+              "version": "v5.2.20",
+              "instances": [
+                {
+                  "id": "p4b-test",
+                  "processName": "uns-archiver",
+                  "desiredRunning": false,
+                  "processes": []
+                }
+              ]
+            },
+            {
+              "version": "v5.2.17",
+              "instances": [
+                {
+                  "id": "p4b-test",
+                  "processName": "uns-archiver",
+                  "desiredRunning": true,
+                  "processes": [
+                    {
+                      "pid": 73817,
+                      "status": "online",
+                      "restarts": 0
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "processes": [
+            {
+              "pid": 73817,
+              "version": "v5.2.17",
+              "instanceId": "p4b-test",
+              "status": "online",
+              "restarts": 0
+            }
+          ]
+        }
+      ]
+    },
+    "oldPause": 200
+  },
+  "handover": {
+    "startedAt": "2026-10-09T20:30:08.842Z",
+    "start": {
+      "StartRttNodeVersion": true
+    },
+    "processes": {
+      "GetRttNodes": [
+        {
+          "rttNode": "uns-archiver",
+          "versions": [
+            {
+              "version": "v5.2.20",
+              "instances": [
+                {
+                  "id": "p4b-test",
+                  "processName": "uns-archiver",
+                  "desiredRunning": true,
+                  "processes": [
+                    {
+                      "pid": 74874,
+                      "status": "online",
+                      "restarts": 0
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "version": "v5.2.17",
+              "instances": [
+                {
+                  "id": "p4b-test",
+                  "processName": "uns-archiver",
+                  "desiredRunning": false,
+                  "processes": [
+                    {
+                      "pid": 0,
+                      "status": "stopped",
+                      "restarts": 0
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "processes": [
+            {
+              "pid": 0,
+              "version": "v5.2.17",
+              "instanceId": "p4b-test",
+              "status": "stopped",
+              "restarts": 0
+            },
+            {
+              "pid": 74874,
+              "version": "v5.2.20",
+              "instanceId": "p4b-test",
+              "status": "online",
+              "restarts": 0
+            }
+          ]
+        }
+      ]
+    },
+    "guard": {
+      "protocol": 1,
+      "handoverId": "941e4c1f-57f5-4bdc-8bd0-2f88200b0be6",
+      "pid": 73817,
+      "launchId": "2c48e071-f51a-4ffd-9060-dadfbd91326b",
+      "running": true,
+      "restarts": 0,
+      "preparedAt": "2026-10-09T20:30:10.892Z"
+    },
+    "receipt": {
+      "protocol": 1,
+      "handoverId": "941e4c1f-57f5-4bdc-8bd0-2f88200b0be6",
+      "launchId": "2c48e071-f51a-4ffd-9060-dadfbd91326b",
+      "pid": 73817,
+      "exitCode": 0,
+      "exitedAt": "2026-10-09T20:30:27.222Z"
+    },
+    "oldRestartBlocked": true,
+    "sourceFiles": 400,
+    "liveRows": 100,
+    "importStatus": {
+      "status": 200,
+      "body": {
+        "protocol": 1,
+        "owner": {
+          "ownerId": "0c3ee6be-b5a0-4231-9d6a-92985dd71002",
+          "processName": "uns-archiver",
+          "controllerName": "controller-p4",
+          "version": "v5.2.20",
+          "instanceId": "p4b-test"
+        },
+        "acceptingCommands": true,
+        "sources": [
+          {
+            "sourceId": "previous-5217",
+            "loaded": true,
+            "ownership": "unclaimed",
+            "error": null,
+            "inspection": {
+              "events": null,
+              "processing": null,
+              "other": null,
+              "entriesVisited": 0,
+              "scanComplete": false,
+              "countKind": "unknown",
+              "capturedAt": null,
+              "error": null
+            },
+            "quarantinePresent": null,
+            "drainRate": {
+              "acknowledgedFilesPerSecond": null,
+              "rowsPerSecond": null,
+              "measuredAt": null
+            },
+            "job": null
+          }
+        ]
+      }
+    }
+  },
+  "api-negative": {
+    "outcomes": {
+      "missingAuth": {
+        "status": 401,
+        "error": "Missing or invalid Authorization header"
+      },
+      "wrongOwner": {
+        "status": 409,
+        "error": "runtime-owner-changed"
+      },
+      "wrongRevision": {
+        "status": 409,
+        "error": "revision-conflict"
+      },
+      "noClosureConfirmation": {
+        "status": 400,
+        "error": "source-closure-confirmation-required"
+      },
+      "arbitraryPath": {
+        "status": 400,
+        "error": "invalid-command"
+      }
+    },
+    "abandonedProcessing": 1
+  },
+  "standalone-stop": {
+    "controllerDown": true,
+    "signal": "SIGTERM",
+    "archiverExited": true,
+    "stopMs": 100.3100829999994,
+    "rows": 800,
+    "batchBeforeStop": {
+      "queuedRows": 8,
+      "flushingRows": 0,
+      "successfulFlushes": 1,
+      "failedFlushes": 0,
+      "retriedFlushes": 0,
+      "rejectedRows": 0,
+      "maxBatchRowsObserved": 32,
+      "lastBatchRows": 32,
+      "lastFlushDurationMs": 13,
+      "lastFlushAt": "2026-10-09T20:46:42.409Z",
+      "lastFailureAt": null,
+      "lastFailure": null,
+      "config": {
+        "flushIntervalMs": 100,
+        "maxRows": 32,
+        "maxPendingRows": 256
+      }
+    },
+    "process": {
+      "pid": 0,
+      "status": "stopped",
+      "exitCode": 0,
+      "restarts": 1
+    }
+  },
+  "final-oracle": {
+    "scope": "local-P4b-real-runtime",
+    "expectedRows": 800,
+    "actualRows": 800,
+    "uniqueIds": 800,
+    "missingIds": 0,
+    "duplicateIds": 0,
+    "historicalTimeMismatches": 0,
+    "legacyWritten": 400,
+    "legacyState": "completed",
+    "legacyRevision": 2,
+    "oldQueuedAndProcessingFiles": 0,
+    "emptyFailedDirectoryRetained": true,
+    "source": [
+      {
+        "sourceId": "previous-5217",
+        "loaded": true,
+        "ownership": "unclaimed",
+        "error": null,
+        "inspection": {
+          "events": null,
+          "processing": null,
+          "other": null,
+          "entriesVisited": 0,
+          "scanComplete": false,
+          "countKind": "unknown",
+          "capturedAt": null,
+          "error": null
+        },
+        "quarantinePresent": null,
+        "drainRate": {
+          "acknowledgedFilesPerSecond": null,
+          "rowsPerSecond": null,
+          "measuredAt": null
+        },
+        "job": {
+          "id": "4b4fe5c2-3d72-4b97-bd74-d2bda38a6420",
+          "sourceId": "previous-5217",
+          "revision": 2,
+          "state": "completed",
+          "written": 400,
+          "duplicate": 0,
+          "quarantined": 0,
+          "deferred": 0,
+          "bytesRead": 109200,
+          "entriesVisited": 404,
+          "rowsWritten": 400,
+          "oldestEventTimeSeen": "2026-10-01T12:01:40.000Z",
+          "inFlight": 0,
+          "startedAt": "2026-10-09T20:35:27.401Z",
+          "updatedAt": "2026-10-09T20:40:42.923Z",
+          "lastError": null
+        }
+      }
+    ]
+  },
+  "lazy-50m": {
+    "scope": "lazy-directory-scanner-only",
+    "logicalEntries": 50000000,
+    "excludes": [
+      "physical-filesystem",
+      "legacy-import-throughput",
+      "QuestDB",
+      "50-million-real-files-acceptance"
+    ],
+    "passes": 97657,
+    "maximumEntriesPerPass": 512,
+    "maximumPassMs": 1.1500830000004498,
+    "maximumSampledRssBytes": 211943424,
+    "elapsedMs": 12852.600790999999,
+    "earlyCloseEntriesVisited": 512,
+    "allEntriesVisited": 50000000
+  },
+  "scope": {
+    "productionTouched": false,
+    "physical50MillionFilesTested": false,
+    "deployment": "isolated actual tag/candidate dist and frozen node_modules; ordinary RTT start, not catalog install",
+    "continuousAtOwnershipBoundary": false
+  }
+}

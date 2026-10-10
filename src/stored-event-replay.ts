@@ -1,5 +1,43 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import {
+  BoundedDirectoryScan,
+  DEFAULT_DIRECTORY_SCAN_LIMITS,
+  type DirectoryScanLimits,
+} from "./bounded-directory-scan.js";
+
+export type StoredQueueSnapshot = {
+  queuedEvents: number | null;
+  processingFiles: number | null;
+  unresolvedProcessingFiles: number | null;
+  otherEntries: number | null;
+  countKind: "unknown" | "lower-bound" | "observed";
+  entriesVisited: number;
+  scanComplete: boolean;
+  startedAt: string | null;
+  capturedAt: string | null;
+  lastError: string | null;
+};
+
+export type ProcessingRecoverySnapshot = {
+  scanComplete: boolean;
+  entriesVisited: number;
+  capturedAt: string | null;
+  lastError: string | null;
+};
+
+const emptyQueueSnapshot = (): StoredQueueSnapshot => ({
+  queuedEvents: null,
+  processingFiles: null,
+  unresolvedProcessingFiles: null,
+  otherEntries: null,
+  countKind: "unknown",
+  entriesVisited: 0,
+  scanComplete: false,
+  startedAt: null,
+  capturedAt: null,
+  lastError: null,
+});
 
 export type StoredReplayLimits = {
   batchSize: number;
@@ -7,7 +45,9 @@ export type StoredReplayLimits = {
 };
 
 export type StoredReplayDiagnostics = {
-  storedQueued: number;
+  storedQueued: number | null;
+  queueInspection: StoredQueueSnapshot;
+  processingRecovery: ProcessingRecoverySnapshot;
   active: boolean;
   inFlight: number;
   successful: number;
@@ -32,6 +72,7 @@ export type StoredEventReplayOptions = {
   getLimits: () => StoredReplayLimits;
   processEvent: (event: unknown) => Promise<boolean>;
   onError?: (message: string) => void;
+  getScanLimits?: () => DirectoryScanLimits;
 };
 
 type LockedStoredEvent = {
@@ -64,10 +105,86 @@ export class StoredEventReplay {
   private lastSuccessAt: string | null = null;
   private lastError: string | null = null;
 
-  constructor(private readonly options: StoredEventReplayOptions) {}
+  private readonly ownedProcessingFiles = new Set<string>();
+  private readonly replayScan: BoundedDirectoryScan;
+  private readonly inventoryScan: BoundedDirectoryScan;
+  private readonly recoveryScan: BoundedDirectoryScan;
+  private queueSnapshot: StoredQueueSnapshot = emptyQueueSnapshot();
+  private recoverySnapshot: ProcessingRecoverySnapshot = {
+    scanComplete: false,
+    entriesVisited: 0,
+    capturedAt: null,
+    lastError: null,
+  };
+  private inventoryPass: Promise<void> | null = null;
+  private recoveryPass: Promise<void> | null = null;
+  private maintenancePass: Promise<void> | null = null;
+  private maintenanceTimer: ReturnType<typeof setTimeout> | null = null;
+  private maintenanceStarted = false;
+  private closed = false;
+  private nextInventoryAt = 0;
+  private nextRecoveryAt = 0;
+
+  constructor(private readonly options: StoredEventReplayOptions) {
+    this.replayScan = new BoundedDirectoryScan(options.eventStorageDirectory);
+    this.inventoryScan = new BoundedDirectoryScan(
+      options.eventStorageDirectory,
+    );
+    this.recoveryScan = new BoundedDirectoryScan(options.eventStorageDirectory);
+  }
+
+  /** Never opens the filesystem on the caller's HTTP/status path. */
+  snapshot(): StoredQueueSnapshot {
+    return { ...this.queueSnapshot };
+  }
+
+  /** Schedules recovery and inventory without delaying subscriptions or API registration. */
+  startBackgroundMaintenance(): void {
+    if (this.maintenanceStarted || this.closed) return;
+    this.maintenanceStarted = true;
+    this.scheduleMaintenance(0);
+  }
+
+  private scheduleMaintenance(delayMs: number): void {
+    if (this.closed) return;
+    this.maintenanceTimer = setTimeout(() => {
+      this.maintenanceTimer = null;
+      const work = this.maintain().catch(() => {
+        this.recordError("stored-replay-maintenance-failed");
+      });
+      this.maintenancePass = work;
+      void work
+        .finally(() => {
+          if (this.maintenancePass === work) this.maintenancePass = null;
+          this.scheduleMaintenance(100);
+        })
+        .catch(() => undefined);
+    }, delayMs);
+    this.maintenanceTimer.unref();
+  }
+
+  private async maintain(): Promise<void> {
+    if (this.closed) return;
+    if (Date.now() >= this.nextRecoveryAt) {
+      await this.recoverStaleProcessing();
+      if (
+        this.recoverySnapshot.scanComplete ||
+        this.recoverySnapshot.lastError
+      ) {
+        this.nextRecoveryAt = Date.now() + 30_000;
+      }
+    }
+    if (!this.closed && Date.now() >= this.nextInventoryAt) {
+      await this.refreshQueueSnapshot();
+      if (this.queueSnapshot.scanComplete || this.queueSnapshot.lastError) {
+        this.nextInventoryAt = Date.now() + 5_000;
+      }
+    }
+  }
 
   async run(): Promise<void> {
     if (
+      this.closed ||
       !this.options.isReady() ||
       this.options.isStopping() ||
       !this.options.hasLiveHeadroom()
@@ -92,96 +209,211 @@ export class StoredEventReplay {
     if (this.activeRun) await this.activeRun;
   }
 
-  async countQueued(): Promise<number> {
-    return (await this.countQueuedUpTo(Number.POSITIVE_INFINITY)) ?? 0;
+  /** Stop maintenance and close all three directory handles before process exit. */
+  async close(): Promise<void> {
+    this.closed = true;
+    if (this.maintenanceTimer) clearTimeout(this.maintenanceTimer);
+    this.maintenanceTimer = null;
+    await Promise.all([
+      this.activeRun,
+      this.maintenancePass,
+      this.inventoryPass,
+      this.recoveryPass,
+    ]);
+    await Promise.all([
+      this.replayScan.close(),
+      this.inventoryScan.close(),
+      this.recoveryScan.close(),
+    ]);
   }
 
-  // Health polling only needs a lower bound; never scan an unbounded spool
-  // merely to decide whether history is falling behind.
+  /** Compatibility helper: one bounded pass, null until a traversal finishes. */
+  async countQueued(): Promise<number | null> {
+    await this.refreshQueueSnapshot();
+    return this.queueSnapshot.scanComplete
+      ? this.queueSnapshot.queuedEvents
+      : null;
+  }
+
+  /** A partial sample below the requested threshold is unknown, never zero. */
   async countQueuedUpTo(maxCount: number): Promise<number | null> {
-    if (!Number.isInteger(maxCount) && maxCount !== Number.POSITIVE_INFINITY) {
+    if (
+      (!Number.isSafeInteger(maxCount) &&
+        maxCount !== Number.POSITIVE_INFINITY) ||
+      maxCount <= 0
+    ) {
       throw new Error("maxCount must be a positive integer");
     }
-    if (maxCount <= 0) throw new Error("maxCount must be a positive integer");
+    await this.refreshQueueSnapshot();
+    const count = this.queueSnapshot.queuedEvents;
+    if (count !== null && count >= maxCount) return maxCount;
+    return this.queueSnapshot.scanComplete ? count : null;
+  }
+
+  refreshQueueSnapshot(): Promise<void> {
+    if (this.closed) return Promise.resolve();
+    if (this.inventoryPass) return this.inventoryPass;
+    const work = this.inspectQueue();
+    this.inventoryPass = work;
+    void work
+      .finally(() => {
+        if (this.inventoryPass === work) this.inventoryPass = null;
+      })
+      .catch(() => undefined);
+    return work;
+  }
+
+  private async inspectQueue(): Promise<void> {
+    if (
+      this.queueSnapshot.scanComplete ||
+      this.queueSnapshot.lastError ||
+      this.queueSnapshot.startedAt === null
+    ) {
+      this.queueSnapshot = {
+        ...emptyQueueSnapshot(),
+        queuedEvents: 0,
+        processingFiles: 0,
+        unresolvedProcessingFiles: 0,
+        otherEntries: 0,
+        countKind: "lower-bound",
+        startedAt: new Date().toISOString(),
+      };
+    }
     try {
-      let count = 0;
-      const directory = await fs.opendir(this.options.eventStorageDirectory);
-      for await (const entry of directory) {
-        if (path.extname(entry.name) === this.options.eventFileExtension) {
-          count += 1;
-          if (count >= maxCount) break;
-        }
-      }
-      return count;
-    } catch (error: any) {
-      if (error?.code === "ENOENT") return 0;
+      const pass = await this.inventoryScan.pass(
+        (entry) => {
+          this.queueSnapshot.entriesVisited++;
+          if (
+            entry.isFile() &&
+            entry.name.endsWith(this.options.eventFileExtension)
+          ) {
+            this.queueSnapshot.queuedEvents!++;
+          } else if (
+            entry.isFile() &&
+            entry.name.endsWith(this.options.processingExtension)
+          ) {
+            this.queueSnapshot.processingFiles!++;
+            if (!this.ownedProcessingFiles.has(entry.name)) {
+              this.queueSnapshot.unresolvedProcessingFiles!++;
+            }
+          } else {
+            this.queueSnapshot.otherEntries!++;
+          }
+        },
+        this.scanLimits(),
+        () => this.closed,
+      );
+      this.queueSnapshot.scanComplete = pass.complete;
+      this.queueSnapshot.countKind = pass.complete ? "observed" : "lower-bound";
+      this.queueSnapshot.capturedAt = new Date().toISOString();
+    } catch (error) {
+      // Missing/inaccessible storage is not evidence of an empty durable queue.
+      this.queueSnapshot = {
+        ...this.queueSnapshot,
+        queuedEvents: null,
+        processingFiles: null,
+        unresolvedProcessingFiles: null,
+        otherEntries: null,
+        countKind: "unknown",
+        scanComplete: false,
+        capturedAt: new Date().toISOString(),
+        lastError: "stored-replay-count-failed",
+      };
       this.recordError("stored-replay-count-failed");
-      return null;
     }
   }
 
-  async recoverStaleProcessing(): Promise<void> {
+  recoverStaleProcessing(): Promise<void> {
+    if (this.closed) return Promise.resolve();
+    if (this.recoveryPass) return this.recoveryPass;
+    const work = this.recoverProcessingPass();
+    this.recoveryPass = work;
+    void work
+      .finally(() => {
+        if (this.recoveryPass === work) this.recoveryPass = null;
+      })
+      .catch(() => undefined);
+    return work;
+  }
+
+  private async recoverProcessingPass(): Promise<void> {
+    if (this.recoverySnapshot.scanComplete || this.recoverySnapshot.lastError) {
+      this.recoverySnapshot = {
+        scanComplete: false,
+        entriesVisited: 0,
+        capturedAt: null,
+        lastError: null,
+      };
+    }
     try {
       await this.ensureDirectories();
-    } catch {
-      this.failed += 1;
-      this.recordError("stored-replay-recovery-setup-failed");
-      return;
-    }
-    let directory;
-    try {
-      directory = await fs.opendir(this.options.eventStorageDirectory);
-    } catch {
-      this.recordError("stored-replay-recovery-scan-failed");
-      return;
-    }
-
-    try {
-      for await (const entry of directory) {
-        const fileName = entry.name;
-        if (!fileName.endsWith(this.options.processingExtension)) continue;
-        const parsed = this.parseProcessingFileName(fileName);
-        if (!parsed) {
-          this.failed += 1;
-          this.recordError("stored-replay-processing-name-invalid");
-          await this.moveUnrecognizedProcessingFileToFailed(fileName);
-          continue;
-        }
-        if (
-          parsed.ownerPid === this.currentProcessId ||
-          this.isProcessAlive(parsed.ownerPid)
-        ) {
-          continue;
-        }
-
-        const processingFilePath = path.join(
-          this.options.eventStorageDirectory,
-          fileName,
-        );
-        const originalFilePath = path.join(
-          this.options.eventStorageDirectory,
-          parsed.originalFileName,
-        );
-        try {
-          if (await this.pathExists(originalFilePath)) {
-            await fs.unlink(processingFilePath);
-          } else {
-            await fs.rename(processingFilePath, originalFilePath);
+      const pass = await this.recoveryScan.pass(
+        async (entry) => {
+          this.recoverySnapshot.entriesVisited++;
+          if (
+            !entry.isFile() ||
+            !entry.name.endsWith(this.options.processingExtension)
+          )
+            return;
+          const fileName = entry.name;
+          const parsed = this.parseProcessingFileName(fileName);
+          if (!parsed) {
+            this.failed++;
+            this.recordError("stored-replay-processing-name-invalid");
+            await this.moveUnrecognizedProcessingFileToFailed(fileName);
+            return;
           }
-          this.recoveredStaleProcessing += 1;
-        } catch {
-          this.failed += 1;
-          this.recordError("stored-replay-recovery-failed");
-        }
-      }
+          if (
+            parsed.ownerPid === this.currentProcessId ||
+            this.isProcessAlive(parsed.ownerPid)
+          )
+            return;
+          const processingFilePath = path.join(
+            this.options.eventStorageDirectory,
+            fileName,
+          );
+          const originalFilePath = path.join(
+            this.options.eventStorageDirectory,
+            parsed.originalFileName,
+          );
+          try {
+            if (await this.pathExists(originalFilePath)) {
+              // Preserve both files: existence alone does not prove duplicate content.
+              this.recordError("stored-replay-recovery-conflict");
+              return;
+            }
+            await fs.rename(processingFilePath, originalFilePath);
+            this.recoveredStaleProcessing++;
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+              this.failed++;
+              this.recordError("stored-replay-recovery-failed");
+            }
+          }
+        },
+        this.scanLimits(),
+        () => this.closed,
+      );
+      this.recoverySnapshot.scanComplete = pass.complete;
+      this.recoverySnapshot.capturedAt = new Date().toISOString();
     } catch {
+      this.recoverySnapshot.lastError = "stored-replay-recovery-scan-failed";
+      this.recoverySnapshot.capturedAt = new Date().toISOString();
+      this.failed++;
       this.recordError("stored-replay-recovery-scan-failed");
     }
   }
 
-  diagnostics(storedQueued: number): StoredReplayDiagnostics {
+  diagnostics(
+    storedQueued: number | null = this.queueSnapshot.queuedEvents === 0 &&
+    !this.queueSnapshot.scanComplete
+      ? null
+      : this.queueSnapshot.queuedEvents,
+  ): StoredReplayDiagnostics {
     return {
       storedQueued,
+      queueInspection: this.snapshot(),
+      processingRecovery: { ...this.recoverySnapshot },
       active: this.activeRun !== null,
       inFlight: this.inFlight,
       successful: this.successful,
@@ -200,9 +432,7 @@ export class StoredEventReplay {
     await this.ensureDirectories();
     let eventFiles: string[];
     try {
-      eventFiles = await this.selectQueuedFiles(
-        this.resolveLimits().batchSize,
-      );
+      eventFiles = await this.selectQueuedFiles(this.resolveLimits().batchSize);
     } catch {
       this.recordError("stored-replay-scan-failed");
       return;
@@ -210,7 +440,12 @@ export class StoredEventReplay {
 
     const locked: LockedStoredEvent[] = [];
     for (const fileName of eventFiles) {
-      if (this.options.isStopping() || !this.options.hasLiveHeadroom()) break;
+      if (
+        this.closed ||
+        this.options.isStopping() ||
+        !this.options.hasLiveHeadroom()
+      )
+        break;
       const lock = await this.lock(fileName);
       if (lock) locked.push(lock);
     }
@@ -224,8 +459,15 @@ export class StoredEventReplay {
     const worker = async (): Promise<void> => {
       while (nextIndex < locked.length) {
         const lockedEvent = locked[nextIndex++];
-        if (this.options.isStopping() || !this.options.hasLiveHeadroom()) {
+        if (
+          this.closed ||
+          this.options.isStopping() ||
+          !this.options.hasLiveHeadroom()
+        ) {
           await this.requeueLocked(lockedEvent);
+          this.ownedProcessingFiles.delete(
+            path.basename(lockedEvent.processingFilePath),
+          );
           continue;
         }
         this.inFlight += 1;
@@ -240,6 +482,18 @@ export class StoredEventReplay {
   }
 
   private async processLocked(lockedEvent: LockedStoredEvent): Promise<void> {
+    try {
+      await this.processLockedEvent(lockedEvent);
+    } finally {
+      this.ownedProcessingFiles.delete(
+        path.basename(lockedEvent.processingFilePath),
+      );
+    }
+  }
+
+  private async processLockedEvent(
+    lockedEvent: LockedStoredEvent,
+  ): Promise<void> {
     let event: unknown;
     try {
       event = JSON.parse(
@@ -304,6 +558,7 @@ export class StoredEventReplay {
     const processingFilePath = `${originalFilePath}.${this.currentProcessId}.${Date.now()}${this.options.processingExtension}`;
     try {
       await fs.rename(originalFilePath, processingFilePath);
+      this.ownedProcessingFiles.add(path.basename(processingFilePath));
       return {
         originalFileName: fileName,
         originalFilePath,
@@ -326,7 +581,8 @@ export class StoredEventReplay {
   private async requeueLocked(lockedEvent: LockedStoredEvent): Promise<void> {
     try {
       if (await this.pathExists(lockedEvent.originalFilePath)) {
-        await fs.unlink(lockedEvent.processingFilePath);
+        this.recordError("stored-replay-requeue-conflict");
+        return;
       } else {
         await fs.rename(
           lockedEvent.processingFilePath,
@@ -419,16 +675,28 @@ export class StoredEventReplay {
     await fs.mkdir(this.options.failedStorageDirectory, { recursive: true });
   }
 
+  private scanLimits(): DirectoryScanLimits {
+    return this.options.getScanLimits?.() ?? DEFAULT_DIRECTORY_SCAN_LIMITS;
+  }
+
   private async selectQueuedFiles(limit: number): Promise<string[]> {
     const files: string[] = [];
-    const directory = await fs.opendir(this.options.eventStorageDirectory);
-    for await (const entry of directory) {
-      if (path.extname(entry.name) !== this.options.eventFileExtension) {
-        continue;
-      }
-      files.push(entry.name);
-      if (files.length >= limit) break;
-    }
+    await this.replayScan.pass(
+      (entry) => {
+        if (
+          entry.isFile() &&
+          entry.name.endsWith(this.options.eventFileExtension)
+        ) {
+          files.push(entry.name);
+        }
+        return files.length < limit;
+      },
+      this.scanLimits(),
+      () =>
+        this.closed ||
+        this.options.isStopping() ||
+        !this.options.hasLiveHeadroom(),
+    );
     return files;
   }
 
@@ -442,7 +710,8 @@ export class StoredEventReplay {
   }
 
   private recordError(message: string): void {
+    const changed = this.lastError !== message;
     this.lastError = message;
-    this.options.onError?.(message);
+    if (changed) this.options.onError?.(message);
   }
 }

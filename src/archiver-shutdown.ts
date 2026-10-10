@@ -17,3 +17,25 @@ export const drainArchiverForShutdown = async (
   await steps.waitForStoredReplay();
   await steps.closeQuestDb();
 };
+
+/** Shared by cooperative handover and signals. Release never interrupts accepted work. */
+export function createArchiverShutdown(
+  releaseAdmission: () => void,
+  steps: ArchiverShutdownSteps,
+): { release: () => void; drain: () => Promise<void> } {
+  let released = false;
+  let draining: Promise<void> | undefined;
+  const release = () => {
+    if (released) return;
+    released = true;
+    releaseAdmission();
+  };
+  return {
+    release,
+    drain: () => {
+      release();
+      draining ??= drainArchiverForShutdown(steps);
+      return draining;
+    },
+  };
+}

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { drainArchiverForShutdown } from "../src/archiver-shutdown.js";
+import {
+  createArchiverShutdown,
+  drainArchiverForShutdown,
+} from "../src/archiver-shutdown.js";
 
 const deferred = () => {
   let resolve: () => void = () => undefined;
@@ -48,4 +51,72 @@ test("waits for active replay before closing the shared QuestDB writer", async (
   replay.resolve();
   await shutdown;
   assert.deepEqual(calls, ["mqtt", "live", "replay", "questdb"]);
+});
+
+test("handover release stops new admission without interrupting accepted work", async () => {
+  let released = 0;
+  const calls: string[] = [];
+  const live = deferred();
+  const shutdown = createArchiverShutdown(
+    () => {
+      released += 1;
+    },
+    {
+      stopMqtt: async () => {
+        calls.push("mqtt");
+      },
+      waitForLiveIngest: async () => {
+        calls.push("live");
+        await live.promise;
+      },
+      waitForStoredReplay: async () => {
+        calls.push("replay");
+      },
+      closeQuestDb: async () => {
+        calls.push("writer");
+      },
+    },
+  );
+  shutdown.release();
+  shutdown.release();
+  assert.equal(released, 1);
+  assert.deepEqual(calls, []);
+  const handover = shutdown.drain();
+  const signal = shutdown.drain();
+  assert.equal(signal, handover);
+  await waitFor(() => calls.includes("live"));
+  assert.deepEqual(calls, ["mqtt", "live"]);
+  live.resolve();
+  await handover;
+  assert.deepEqual(calls, ["mqtt", "live", "replay", "writer"]);
+  await shutdown.drain();
+  assert.equal(released, 1);
+  assert.equal(calls.length, 4);
+});
+
+test("failed replay drain is shared with signal cleanup and never closes its pending writer", async () => {
+  const failure = new Error("replay failed");
+  let closes = 0;
+  let releases = 0;
+  const shutdown = createArchiverShutdown(
+    () => {
+      releases++;
+    },
+    {
+      stopMqtt: async () => undefined,
+      waitForLiveIngest: async () => undefined,
+      waitForStoredReplay: async () => {
+        throw failure;
+      },
+      closeQuestDb: async () => {
+        closes++;
+      },
+    },
+  );
+  const first = shutdown.drain();
+  assert.equal(shutdown.drain(), first);
+  await assert.rejects(first, failure);
+  await assert.rejects(shutdown.drain(), failure);
+  assert.equal(closes, 0);
+  assert.equal(releases, 1);
 });

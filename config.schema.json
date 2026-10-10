@@ -1974,6 +1974,61 @@
           "description": "Archiver runtime settings.",
           "type": "object",
           "properties": {
+            "legacySources": {
+              "description": "Node-local allowlist of sealed legacy spool directories. Select by ID through the import API; never synchronize these host paths across controllers. Changes require archiver restart.",
+              "maxItems": 16,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]{0,63}$"
+                  },
+                  "directory": {
+                    "type": "string",
+                    "pattern": "^\\/.*"
+                  }
+                },
+                "required": [
+                  "id",
+                  "directory"
+                ]
+              }
+            },
+            "legacyImport": {
+              "description": "Bounded legacy import settings, read at startup. Defaults: 256 events/pass, up to 64 writers (capped at one eighth of live event capacity), 1 MiB/file, 16 MiB/pass, 100 ms between passes. Source must be closed by its old writer before starting import.",
+              "type": "object",
+              "properties": {
+                "batchSize": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 512
+                },
+                "concurrency": {
+                  "description": "Requested legacy writers (default 64). Runtime caps this at floor(ingestQueueMaxEvents / 8), minimum 1. Requesting 128 requires at least 1024 live event capacity; effective limits are reported by import status.",
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 128
+                },
+                "maxFileBytes": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 16777216
+                },
+                "maxBatchBytes": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 67108864
+                },
+                "intervalMs": {
+                  "description": "Healthy-pass pacing (default 100 ms). Explicit 10 ms is opt-in for measured local capacity; failure backoff, queue limits and ACK checks remain unchanged.",
+                  "type": "integer",
+                  "minimum": 10,
+                  "maximum": 60000
+                }
+              }
+            },
             "inactiveBufferMax": {
               "description": "Max number of events kept in-memory while waiting for the controller/GraphQL active-topics registry (default 2000). Overflow is discarded because inactive topics are not eligible for history.",
               "type": "integer",
