@@ -30,11 +30,11 @@ async function fixture(
   await fs.mkdir(source);
   await fs.mkdir(live);
   const managers: LegacyImportManager[] = [];
-  const create = () => {
+  const create = (instanceId = "test-instance") => {
     const manager = new LegacyImportManager({
       sources: [{ id: "old-instance", directory: source }],
       liveDirectory: live,
-      instanceId: "test-instance",
+      instanceId,
       policyDigest: options.policy ?? (() => "policy-1"),
       canWrite: () => true,
       acceptingCommands: options.acceptingCommands,
@@ -914,4 +914,25 @@ test("background scheduler honors opt-in short pacing while ACK is still require
     await delay(10);
   assert.equal(f.manager.status()[0].job?.written, 2);
   assert.equal(f.manager.status()[0].job?.state, "completed");
+});
+
+test("version replacement retains paused job identity and prevents two runtime owners", async (t) => {
+  const seen: string[] = [];
+  const f = await fixture(t, { settings: { batchSize: 1, concurrency: 1 }, write: async event => { seen.push(event.topic); return { outcome: "written" }; } });
+  for (let index = 0; index < 4; index++) await f.writeFile(`${index}.event`, { topic: `test/material/${index}`, message: "{}" });
+  await f.command("start"); await f.manager.tick();
+  await f.command("pause", 1);
+  const paused = f.manager.status()[0].job!;
+  assert.equal(paused.state, "paused"); assert.ok(paused.written > 0 && paused.written < 4);
+  const next = f.create("next-version-runtime");
+  await next.tick();
+  assert.equal(next.status()[0].job?.id, paused.id);
+  await assert.rejects(next.command({ action: "resume", sourceId: "old-instance", expectedRevision: paused.revision, requestId: "early-next-owner", confirmSourceClosed: true }), /source-already-claimed/);
+  await f.manager.close();
+  await next.command({ action: "resume", sourceId: "old-instance", expectedRevision: paused.revision, requestId: "reviewed-next-owner", confirmSourceClosed: true });
+  await settle(next);
+  const complete = next.status()[0].job!;
+  assert.equal(complete.id, paused.id); assert.equal(complete.revision, paused.revision + 1);
+  assert.equal(complete.state, "completed"); assert.equal(complete.written, 4);
+  assert.equal(new Set(seen).size, 4); assert.equal(seen.length, 4);
 });

@@ -8,7 +8,7 @@ auto-restart before letting the new importer own its backlog. The new live
 instance writes to its own storage; old `.event` and supported `.processing`
 files are imported later from an operator-allowlisted node-local source.
 
-Configure sources in instance-local `legacy-sources.json` or the startup config,
+Configure sources in instance-local `legacy-import-sources.json` or the startup config,
 then inspect/confirm/start through the authenticated legacy import API. Source
 paths cannot be supplied in arbitrary HTTP commands. See the README for the
 API, instance binding, `expectedRevision`, `requestId`, pause/resume and source
