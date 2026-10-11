@@ -255,6 +255,22 @@ Both endpoints use the configured JWT/JWKS verification and token path grants.
 is published as a separate degraded dependency signal, so an empty new live spool
 does not hide an old backlog in the controller's service health. No configured
 legacy sources means this extra dependency signal is absent.
+
+Starting with 5.2.22, the dependency includes an additive `recoveryState`:
+`running`, `paused`, `pending`, `blocked`, or `completed`. Unfinished recovery
+remains degraded; running or paused historical replay does not mean the live
+MQTT writer has stopped. Errors, quarantine and deferred files still require
+review. Controller 2.1.150 displays these distinctions; older controllers still
+understand the existing `healthy`/`state` fields. Publication is periodic (30
+seconds), so a status view may briefly lag a pause, resume or completion.
+
+For a subsequent version upgrade, pause legacy replay, wait for in-flight writes
+to finish, then preserve its original source and checkpoint. Provision the same
+node-local `legacy-import-sources.json` in the stopped target instance explicitly;
+it is not synchronized portable config. After reviewed handover and clean source
+exit, verify target live ingestion, inspect the same paused job, and resume using
+the new owner/current revision. Retain old instance spools until reviewed recovery
+is complete. See [5.2.22 acceptance](docs/release-5.2.22.md).
 The mutation endpoint has a separate path: permission to read `imports` does
 not permit `import-control`. API commands reject extra fields and arbitrary paths.
 The same most recent request ID and identical body are idempotent; changed reuse
