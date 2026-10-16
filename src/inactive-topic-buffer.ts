@@ -62,3 +62,28 @@ export const isInactiveBufferSpill = (event: unknown): boolean => {
   const reason = (event as { bufferReason?: unknown }).bufferReason;
   return reason === "inactive_expired" || reason === "inactive_overflow";
 };
+
+/** Transfer eligible packets to the bounded live queue without waiting for a
+ * database flush per packet. An enqueue failure leaves the packet buffered. */
+export function transferActiveBufferedEvents<T>(
+  eventsByTopic: Map<string, T[]>,
+  isActive: (topic: string) => boolean,
+  enqueue: (event: T) => void,
+): number {
+  let transferred = 0;
+  for (const [topic, events] of eventsByTopic) {
+    if (!isActive(topic)) continue;
+    let accepted = 0;
+    try {
+      for (const event of events) {
+        enqueue(event);
+        accepted++;
+        transferred++;
+      }
+    } finally {
+      events.splice(0, accepted);
+      if (!events.length) eventsByTopic.delete(topic);
+    }
+  }
+  return transferred;
+}

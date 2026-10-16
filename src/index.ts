@@ -64,7 +64,9 @@ import {
 import {
   discardExpiredOrOverflowInactiveEvents,
   isInactiveBufferSpill,
+  transferActiveBufferedEvents,
 } from "./inactive-topic-buffer.js";
+import { metadataRefreshScheduler } from "./metadata-refresh-scheduler.js";
 import { resolveControllerEndpoints } from "./controller-endpoints.js";
 let pkgInfo: { name: string; version: string } | null = null;
 let verifiedManagedIdentity: { controllerName: string; instanceId: string } | null = null;
@@ -186,6 +188,10 @@ let activeTopics: string[] = [];
 let topicMetadata: Record<string, UnsTopicMetadata> = {};
 let subscribedTopicFilters: string[] = [];
 let activeTopicsRefreshPromise: Promise<void> | null = null;
+
+const metadataRefresh = metadataRefreshScheduler(async () => {
+  if (!shuttingDown) await refreshActiveTopics();
+});
 
 const mqttPublishCircuit = new CircuitBreaker("mqtt-mapping-publish", {
   failureThreshold: 5,
@@ -468,6 +474,7 @@ const archiverShutdown = createArchiverShutdown(
       else if (mqttInput) await mqttInput.stop();
     },
     waitForLiveIngest: async () => {
+      metadataRefresh.close();
       if (!ingestQueue) return;
       const { pendingEvents, spillingEvents } = ingestQueue.snapshot();
       if (pendingEvents > 0 || spillingEvents > 0) {
@@ -627,6 +634,7 @@ const bufferInactiveEvent = async (
   arr.push({ mqttEvent, eventId, receivedAt: now });
   inactiveBufferByTopic.set(normalizedTopic, arr);
   inactiveBufferEventIds.add(eventId);
+  metadataRefresh.request();
 
   // This buffer bridges a short UNS metadata race. Packets that remain outside
   // the active registry must not become a durable backlog merely because a
@@ -662,41 +670,14 @@ const bufferInactiveEvent = async (
   }
 };
 
-const flushInactiveBuffer = async (): Promise<void> => {
-  const topicsToFlush = Array.from(inactiveBufferByTopic.keys()).filter((t) => activeTopicSet.has(t));
-  if (topicsToFlush.length === 0) return;
-
-  if (traceIngestEnabled) {
-    const total = topicsToFlush.reduce((acc, t) => acc + (inactiveBufferByTopic.get(t)?.length ?? 0), 0);
-    logger.info(`[trace][buffer] flush_start topics=${topicsToFlush.length} events=${total}`);
-  }
-
-  for (const t of topicsToFlush) {
-    const buffered = inactiveBufferByTopic.get(t);
-    if (!buffered || buffered.length === 0) {
-      inactiveBufferByTopic.delete(t);
-      continue;
-    }
-    inactiveBufferByTopic.delete(t);
-    for (const ev of buffered) {
+const flushInactiveBuffer = (): void => {
+  if (shuttingDown) return;
+  const transferred = transferActiveBufferedEvents(inactiveBufferByTopic,
+    topic => activeTopicSet.has(topic), ev => {
+      ingestQueue!.enqueue({ id: ev.eventId, value: ev.mqttEvent, bytes: estimateMqttEventBytes(ev.mqttEvent) });
       inactiveBufferEventIds.delete(ev.eventId);
-      try {
-        await processEvent(ev.mqttEvent, false, { bypassActiveTopicCheck: true });
-      } catch (err) {
-        // best-effort: spill to disk so we don't lose it
-        try {
-          await saveEventToFile({ ...ev.mqttEvent, bufferReason: "flush_error", bufferedAt: new Date(ev.receivedAt).toISOString() }, ev.eventId);
-        } catch {
-          // ignore
-        }
-        if (traceIngestEnabled) {
-          logger.info(
-            `[trace][buffer] flush_error eventId=${ev.eventId} topic='${String(t)}' err=${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-      }
-    }
-  }
+    });
+  if (traceIngestEnabled && transferred) logger.info(`[trace][buffer] transferred ${transferred} active events to bounded ingest queue.`);
 };
 const topicObservations = new TopicObservations();
 const recordObservedDataGroup = (topic: string, kind: "data" | "table", dataGroup: string | null | undefined): boolean => {
@@ -1307,11 +1288,13 @@ function handleEntityBindingInvalidation(message: unknown): void {
  * Refreshes active topics and updates MQTT subscriptions if topics have changed.
  */
 function refreshActiveTopics(): Promise<void> {
+  if (shuttingDown) return Promise.resolve();
   if (activeTopicsRefreshPromise) return activeTopicsRefreshPromise;
 
   activeTopicsRefreshPromise = (async () => {
     try {
       const { topics, metaByTopic, source } = await ActiveUnsTopics.getActiveUnsTopics();
+      if (shuttingDown) return;
       // Fallback data supports startup continuity, never removal authority.
       if (source !== "controller") {
         activeTopicsAuthoritative = false;
@@ -1504,7 +1487,7 @@ async function processEvent(
         return false;
       }
 
-      // Buffer in memory; spill to local storage on overflow/expiry.
+      // Bridge registration briefly; unknown topics still expire under the existing limits.
       await bufferInactiveEvent(normalizedInputTopic, mqttEvent, eventId);
       inflightEventIds.delete(eventId);
       return true;

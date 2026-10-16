@@ -91,6 +91,15 @@ topic that is not yet active are held in memory only for
 to cover a short metadata race. If the topic is still inactive, the packet is
 discarded rather than added to `event_storage`; a broad MQTT filter must not
 turn unrelated infrastructure telemetry into an endless durable backlog.
+Eligible buffered packets are handed to the same bounded ingest queue as live
+traffic, so they share QuestDB batches and overflow uses the existing spool.
+Registry refresh never waits for one database flush per buffered packet. Unknown
+packets request a coalesced registry refresh (at most once every five seconds,
+never overlapping); the normal 30-second poll remains the fallback. Unregistered
+packets still have the same in-memory count/age limits and are not made durable.
+This bridges startup registration races; it does not guarantee history before the
+archiver has subscribed or through a prolonged registry outage.
+
 Legacy spool entries marked `inactive_expired` or `inactive_overflow` are
 acknowledged while replaying for the same reason.
 
