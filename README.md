@@ -621,3 +621,12 @@ run took 46.65 seconds. These are synthetic local fixtures, not a production
 pnpm exec tsx scripts/compare-legacy-import-throughput.mts 20000 short-pacing /tmp/import-short-pacing.json
 pnpm exec tsx scripts/accept-real-questdb-import.mts 2000 /tmp/import-short-faults.json import-hint pipeline-large short-pacing
 ```
+
+
+### 5.2.24 compatibility update
+
+This release updates the shared UNS Kit API/core runtime to 3.0.25, the corrected
+SDK release used in the joint local demo/API/archiver validation. It changes no
+archiver storage layout, import-source path, queue migration or deletion policy.
+Existing spool and instance storage must be preserved through the usual reviewed
+upgrade/handover procedure. No new ingestion or exactly-once guarantees are claimed.
