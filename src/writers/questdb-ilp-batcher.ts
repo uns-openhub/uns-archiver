@@ -10,6 +10,7 @@ export type QuestDbBatchConfig = {
 export type ResolvedQuestDbBatchConfig = Required<QuestDbBatchConfig>;
 
 export type QuestDbBatchDiagnostics = {
+  oldestPendingWriteMs: number | null;
   queuedRows: number;
   flushingRows: number;
   successfulFlushes: number;
@@ -110,6 +111,7 @@ export class QuestDbIlpBatcher {
   private totalFlushDurationMs = 0;
   private flushInProgress: Promise<void> | undefined;
   private flushingRows = 0;
+  private flushingEnqueuedAt: number | null = null;
   private closed = false;
   private config: ResolvedQuestDbBatchConfig;
   private successfulFlushes = 0;
@@ -176,6 +178,8 @@ export class QuestDbIlpBatcher {
 
   snapshot(): QuestDbBatchDiagnostics {
     return {
+      oldestPendingWriteMs: this.pending.length || this.flushingEnqueuedAt !== null
+        ? Math.max(0, performance.now() - Math.min(this.pending[0]?.enqueuedAt ?? Infinity, this.flushingEnqueuedAt ?? Infinity)) : null,
       queuedRows: this.pending.length,
       flushingRows: this.flushingRows,
       successfulFlushes: this.successfulFlushes,
@@ -250,9 +254,11 @@ export class QuestDbIlpBatcher {
       this.queueWait.maximumMs = Math.max(this.queueWait.maximumMs, wait);
     }
     this.flushingRows = batch.length;
+    this.flushingEnqueuedAt = batch[0]?.enqueuedAt ?? null;
     let operation: Promise<void>;
     operation = this.flushBatch(batch).finally(() => {
       this.flushingRows = 0;
+      this.flushingEnqueuedAt = null;
       if (this.flushInProgress === operation) {
         this.flushInProgress = undefined;
       }

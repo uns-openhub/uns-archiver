@@ -630,3 +630,43 @@ SDK release used in the joint local demo/API/archiver validation. It changes no
 archiver storage layout, import-source path, queue migration or deletion policy.
 Existing spool and instance storage must be preserved through the usual reviewed
 upgrade/handover procedure. No new ingestion or exactly-once guarantees are claimed.
+
+## Archive write progress
+
+The existing service metadata dependency channel reports a bounded runtime
+observation (`archiver-write-flow`), and the authenticated topics/status response
+also includes `archiveWriteHealth`. The Controller can display it in its existing
+service and instance diagnostics: memory events, queued/in-flight rows, oldest
+pending write age, last successful write acknowledgement, disk inspection snapshot,
+and process-lifetime retry/failure counters. These contain no source payloads.
+
+A write waiting at least the greater of five seconds or three configured batch
+intervals needs attention. A failed write remains unconfirmed until a subsequent
+successful write; resetting/retrying the batch does not clear that state. An
+operator pause is explicit. Idle time since the last successful write alone is
+not an outage. Older Controllers can ignore the added dependency details; older
+archivers do not provide this progress evidence.
+
+Pending write age uses a monotonic process clock and includes in-flight work.
+It measures acknowledgement delay inside this writer, not measurement age or
+end-to-end database visibility. Retry counters count attempts, not unique lost
+events. Disk counts are existing background observations, may be lower bounds,
+and are not a fresh full directory count on each health read. Legacy import
+progress remains separate. A write acknowledgement is not proof of complete
+history or read-replica visibility.
+
+### Input readiness is separate from process Start
+
+The existing service diagnostics and authenticated topics/status response include
+`archiver-input-readiness` / `inputReadiness`. Wait for **Ready to receive** before
+starting a source. A running process or successful Start request alone does not
+confirm MQTT subscriptions. Non-retained publications sent before the subscriber
+exists cannot be recovered by a later database batch flush.
+
+Broker-confirmed readiness requires UNS Kit3.0.26 or newer. The runtime additionally
+checks its installed input handler, authoritative active-topic registry, current
+subscription observation, ingestion pause and shutdown state. Missing/old signals
+stay unconfirmed; disconnect/reconnect requires a new confirmation. Readiness is
+reported through the same bounded service metadata channel, without source topics,
+payloads or credentials. Readiness does not certify durable admission, database
+write ACK, complete history or replica visibility; those remain separate checks.
