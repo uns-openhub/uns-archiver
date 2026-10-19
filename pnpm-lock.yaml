@@ -23,11 +23,11 @@ importers:
         specifier: ^4.2.0
         version: 4.2.0
       '@uns-kit/api':
-        specifier: ^3.0.23
-        version: 3.0.23(typescript@6.0.3)
+        specifier: ^3.0.25
+        version: 3.0.25(typescript@6.0.3)
       '@uns-kit/core':
-        specifier: ^3.0.23
-        version: 3.0.23(typescript@6.0.3)
+        specifier: ^3.0.25
+        version: 3.0.25(typescript@6.0.3)
       dotenv:
         specifier: ^17.4.2
         version: 17.4.2
@@ -1084,11 +1084,11 @@ packages:
   '@types/ws@8.18.1':
     resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
 
-  '@uns-kit/api@3.0.23':
-    resolution: {integrity: sha512-olAhIx3bZeZJlVKg4KwjttCGsccKdmlh/cb25KLyF959gAZmOiOGKF6t2S50CqTRXJNlp9FeYuL6l6kB/KOffA==}
+  '@uns-kit/api@3.0.25':
+    resolution: {integrity: sha512-RovcimLAt7z/VyWG0aCw0n+M3zNjRjhtznucCBsu7EhD9e3goQLPn2SvrV9LvkMctrLh1S9pthMIw0EjiC7fiA==}
 
-  '@uns-kit/core@3.0.23':
-    resolution: {integrity: sha512-r8WWsYN7pR4rE0tIrAs+pYE/5DqdupyPsl0y3nwuHkEYkH2uGyQA6i7viNmscX6cL/IbO08D1+kCQa+RaCsrbQ==}
+  '@uns-kit/core@3.0.25':
+    resolution: {integrity: sha512-RO7XjR9jHQkd2hdZ8dO9gqVafrpPRwBoa5Igva1RdJOZiIrxWkbTQD6dHW5Qss133MprZXJuZQ1sAy+nL64naA==}
 
   '@whatwg-node/disposablestack@0.0.6':
     resolution: {integrity: sha512-LOtTn+JgJvX8WfBVJtF08TGrdjuFzGJc4mkP8EdDI8ADbvO7kiexYep1o8dwnt0okb0jYclCDXF13xU7Ge4zSw==}
@@ -3847,9 +3847,9 @@ snapshots:
     dependencies:
       '@types/node': 26.2.0
 
-  '@uns-kit/api@3.0.23(typescript@6.0.3)':
+  '@uns-kit/api@3.0.25(typescript@6.0.3)':
     dependencies:
-      '@uns-kit/core': 3.0.23(typescript@6.0.3)
+      '@uns-kit/core': 3.0.25(typescript@6.0.3)
       cookie-parser: 1.4.7
       express: 5.2.1
       hyparquet-writer: 0.16.6
@@ -3862,7 +3862,7 @@ snapshots:
       - typescript
       - utf-8-validate
 
-  '@uns-kit/core@3.0.23(typescript@6.0.3)':
+  '@uns-kit/core@3.0.25(typescript@6.0.3)':
     dependencies:
       '@grpc/grpc-js': 1.14.4
       '@grpc/proto-loader': 0.8.1
