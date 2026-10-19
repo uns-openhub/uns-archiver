@@ -1,3 +1,5 @@
+import { archiveInputReadiness } from "./archive-input-readiness.js";
+import { assessArchiveWriteHealth } from './archive-write-health.js';
 import { loadLegacySources } from "./legacy-source-file.js";
 import { TopicObservations } from "./topic-observations.js";
 import {
@@ -170,6 +172,11 @@ function resolveIngestMode(storage: any, unsPacket: any): IngestMode {
 
 let config = await ConfigFile.loadConfig();
 let mqttInput: UnsMqttProxy | undefined;
+let inputHandlerInstalled = false;
+let inputSubscriptionsConfirmed: boolean | null = null;
+let inputObservationAt: number | null = null;
+let lastPublishedInputPhase: string | null = null;
+let inputReadinessPublishInFlight = false;
 let lastMappingHash: string | null = null;
 let mappingPublishPromise: Promise<void> | undefined;
 let mappingPublishRequested = false;
@@ -548,6 +555,12 @@ async function refreshQuestDbHealth(): Promise<QuestDbDependencyHealth> {
   return latestQuestDbHealth;
 }
 
+function currentInputReadiness() {
+  return archiveInputReadiness({inputInstalled:inputHandlerInstalled,topicsReady:activeTopicsReady,
+    topicsAuthoritative:activeTopicsAuthoritative,subscriptionsConfirmed:inputSubscriptionsConfirmed,
+    observedAt:inputObservationAt,paused:ingestionPaused,stopping:shuttingDown});
+}
+
 async function publishArchiverServiceMetadata() {
   if (!serviceMetadataPublisher) return;
   const health = latestQuestDbHealth ?? (await refreshQuestDbHealth());
@@ -560,6 +573,7 @@ async function publishArchiverServiceMetadata() {
   );
   latestIngestHealth = ingestHealth;
   const legacyImportHealth = assessLegacyImportHealth(legacyImports.status());
+  const writeHealth = assessArchiveWriteHealth(questDbWriter.getBatchDiagnostics(), ingestQueue?.snapshot(), ingestionPaused, new Date(), inspection);
   if (previousIngestHealthy !== ingestHealth.healthy) {
     logger.info(`Archive ingest health is ${ingestHealth.state}${ingestHealth.message ? `: ${ingestHealth.message}` : "."}`);
   }
@@ -568,7 +582,7 @@ async function publishArchiverServiceMetadata() {
     kind: "core",
     label: "UNS Archiver",
     description: "Persists UNS time-series data into QuestDB and publishes QuestDB table mappings.",
-    capabilities: ["history", "questdb-mapping", "graph-data"],
+    capabilities: ["history", "questdb-mapping", "graph-data", "archive-input-readiness"],
     ...(verifiedManagedIdentity
       ? {
           instanceId: verifiedManagedIdentity.instanceId,
@@ -579,13 +593,26 @@ async function publishArchiverServiceMetadata() {
         }
       : {}),
     extra: {
-      dependencies: [health, ingestHealth, ...(legacyImportHealth ? [legacyImportHealth] : [])],
+      dependencies: [health, ingestHealth, writeHealth, currentInputReadiness(), ...(legacyImportHealth ? [legacyImportHealth] : [])],
       questdbHealth: health,
       ingestHealth,
       ...(legacyImportHealth ? { legacyImportHealth } : {}),
     },
   });
 }
+
+function publishInputReadinessChange(force = false) {
+  if (!serviceMetadataPublisher || inputReadinessPublishInFlight) return;
+  const phase = currentInputReadiness().phase;
+  if (!force && phase === lastPublishedInputPhase) return;
+  inputReadinessPublishInFlight = true;
+  lastPublishedInputPhase = phase;
+  void publishArchiverServiceMetadata().catch(() => {
+    lastPublishedInputPhase = null;
+    logger.warn("Archive input readiness publication failed; confirmation remains pending.");
+  }).finally(() => { inputReadinessPublishInFlight = false; });
+}
+setInterval(publishInputReadinessChange, 5000).unref();
 
 async function refreshAndPublishQuestDbHealth() {
   const previousHealthy = latestQuestDbHealth?.healthy;
@@ -805,7 +832,7 @@ async function registerArchiverService(): Promise<void> {
     service: {
       id: "uns-archiver",
       version: packageInfo.version,
-      capabilities: ["history", "questdb-mapping", "graph-data"],
+      capabilities: ["history", "questdb-mapping", "graph-data", "archive-input-readiness"],
       healthContract: "service-metadata-v1",
       processName: config.uns.processName,
     },
@@ -1132,6 +1159,8 @@ async function handleApiGetEvent(event: any) {
         ...queueStatus,
         storedReplay: storedReplay.diagnostics(),
         legacyImports: legacyImports.status(),
+        inputReadiness: currentInputReadiness(),
+        archiveWriteHealth: assessArchiveWriteHealth(questDbWriter.getBatchDiagnostics(), ingestQueue?.snapshot(), ingestionPaused, new Date(), storedReplay.snapshot()),
         questDbBatch: questDbWriter.getBatchDiagnostics(),
         ingestQueue: ingestQueue?.snapshot(),
         processedEventIdsSize: processedEventIds.size,
@@ -1224,6 +1253,12 @@ async function subscribeToTopics(topics: string[]) {
         subscribeThrottlingDelay: 0,
       }
     );
+    mqttInput.event.on("mqttProxyStatus", event => {
+      if (event.event !== "mqtt-subscriptions-ready") return;
+      inputSubscriptionsConfirmed = event.value === 1;
+      inputObservationAt = Date.now();
+      publishInputReadinessChange(true);
+    });
     mqttInput.event.on("input", (mqttEvent) => {
       try {
         if (String(mqttEvent?.topic ?? "") === ENTITY_BINDING_INVALIDATION_TOPIC) {
@@ -1242,6 +1277,7 @@ async function subscribeToTopics(topics: string[]) {
         void saveEventToFile(mqttEvent, eventId);
       }
     });
+    inputHandlerInstalled = true;
     subscribedTopicFilters = desiredTopics;
     await publishQuestDbMapping();
   } else {
