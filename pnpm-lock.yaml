@@ -23,11 +23,11 @@ importers:
         specifier: ^4.2.0
         version: 4.2.0
       '@uns-kit/api':
-        specifier: ^3.0.26
-        version: 3.0.26(typescript@6.0.3)
+        specifier: 3.0.36
+        version: 3.0.36(typescript@6.0.3)
       '@uns-kit/core':
-        specifier: ^3.0.26
-        version: 3.0.26(typescript@6.0.3)
+        specifier: 3.0.36
+        version: 3.0.36(typescript@6.0.3)
       dotenv:
         specifier: ^17.4.2
         version: 17.4.2
@@ -952,6 +952,7 @@ packages:
   '@smithy/core@3.32.0':
     resolution: {integrity: sha512-NAiCSC78fzbNIEWoheoF74Ob5ZorLijCHpMY26Fqvqg/+9LuyIqMfHDg2p8Yk1rqOyowtiL3y7WX0AW+teL6zw==}
     engines: {node: '>=18.0.0'}
+    deprecated: Deprecated due to a bug in custom logger data redaction. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
 
   '@smithy/credential-provider-imds@4.5.0':
     resolution: {integrity: sha512-2jsPi+7Zv2hSzD9IXR9D7DTqSn7mv4XalzRm+bESh53jiaUS3NKEUbpQFTJP0HhQy9qzZvluxQ3yS24zdRrqsA==}
@@ -1084,11 +1085,11 @@ packages:
   '@types/ws@8.18.1':
     resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
 
-  '@uns-kit/api@3.0.26':
-    resolution: {integrity: sha512-xXXzWI4OTil4AIBdzuFPIovOTsq9iCvleSMpMI809IJchlytpE+B7xLZhZreWo5LC65+bjHwrx6qmHMhNqiBAw==}
+  '@uns-kit/api@3.0.36':
+    resolution: {integrity: sha512-V0w/FvQ0m8YS01OK2yGMhHkDbupjlLlOs2KAFSALm/wc9xa/op1XnyUeCE6EukQnYkgzGjuJ/r1XaXQIWYc50g==}
 
-  '@uns-kit/core@3.0.26':
-    resolution: {integrity: sha512-moI+LtnerDpk48pHR0biV9jYYvU3czsSkik/irR14VKU42woQcaSx8e5JEH89JHoSkSHsgxtBCDyh5sZxV+RtA==}
+  '@uns-kit/core@3.0.36':
+    resolution: {integrity: sha512-AP1tS3Vj0Uzw9h24+f/jrEDUCUSOLdNiOUaOXphbphNTr8QaehrNt/lsuAGQXHAO9ik4wJJPT1/LHObJM8w18Q==}
 
   '@whatwg-node/disposablestack@0.0.6':
     resolution: {integrity: sha512-LOtTn+JgJvX8WfBVJtF08TGrdjuFzGJc4mkP8EdDI8ADbvO7kiexYep1o8dwnt0okb0jYclCDXF13xU7Ge4zSw==}
@@ -3847,9 +3848,9 @@ snapshots:
     dependencies:
       '@types/node': 26.2.0
 
-  '@uns-kit/api@3.0.26(typescript@6.0.3)':
+  '@uns-kit/api@3.0.36(typescript@6.0.3)':
     dependencies:
-      '@uns-kit/core': 3.0.26(typescript@6.0.3)
+      '@uns-kit/core': 3.0.36(typescript@6.0.3)
       cookie-parser: 1.4.7
       express: 5.2.1
       hyparquet-writer: 0.16.6
@@ -3862,7 +3863,7 @@ snapshots:
       - typescript
       - utf-8-validate
 
-  '@uns-kit/core@3.0.26(typescript@6.0.3)':
+  '@uns-kit/core@3.0.36(typescript@6.0.3)':
     dependencies:
       '@grpc/grpc-js': 1.14.4
       '@grpc/proto-loader': 0.8.1
