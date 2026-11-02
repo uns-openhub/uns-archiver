@@ -17,6 +17,11 @@ const questDbUrlSchema = z.union([
 export const projectExtrasSchema = z.object({
   archiver: z
     .object({
+      targetJournal: z.object({
+        maxBytes: z.number().int().min(1048576).max(1099511627776).optional(),
+        reserveBytes: z.number().int().min(1048576).optional(),
+        maxPendingPerTarget: z.number().int().min(1).max(10000000).optional(),
+      }).optional().describe("Startup-only durable per-table journal limits. Defaults: 1 GiB database budget (half reserved for payloads), 64 MiB disk reserve, one million pending parts per table. Retained under event_storage/targets; never delete to resume a pause."),
       legacySources: z
         .array(
           z.object({

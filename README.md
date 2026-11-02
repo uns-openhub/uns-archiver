@@ -17,7 +17,7 @@ QuestDB table mappings back to the UNS infrastructure.
 
 ## Requirements
 
-- Node.js 22 or newer
+- Node.js 22.13 or newer (Runtime Node.js 24 is recommended)
 - pnpm 10
 - A running UNS OpenHub controller and MQTT broker
 - QuestDB with HTTP line protocol enabled
@@ -670,3 +670,133 @@ stay unconfirmed; disconnect/reconnect requires a new confirmation. Readiness is
 reported through the same bounded service metadata channel, without source topics,
 payloads or credentials. Readiness does not certify durable admission, database
 write ACK, complete history or replica visibility; those remain separate checks.
+
+
+## Selective target control (5.2.28)
+
+This API controls writes owned by this Archiver instance. It does not lock QuestDB,
+stop another microservice, or cover clients that write directly to the database.
+The existing global `/control?action=...` API remains separate: a global resume
+never clears a selective pause.
+
+The new endpoints are registered under the service API's normal prefix:
+
+- `GET .../targets`: current policy revision, pause rules, flush boundary,
+  per-table queued/in-flight/retrying counts, oldest age and disk budget.
+- `POST .../target-control`: `preview`, `pause` or `resume`.
+
+Both endpoints require the SDK's verified JWT and matching API path grant. The
+caller must also have `admin` or `operator` role and an identified subject. Never
+put a bearer token in a URL. Use the registered endpoint from the route catalog;
+its controller/proxy prefix can differ between deployments.
+
+Example request bodies (the table names below are synthetic):
+
+```json
+{"action":"preview","selector":{"topicFilter":"example/line/#"}}
+```
+
+```json
+{"action":"pause","selector":{"tables":["example_measurements_data"]},"requestId":"10000000-0000-4000-8000-000000000001","expectedRevision":0,"reason":"Reviewed table maintenance"}
+```
+
+```json
+{"action":"resume","pauseId":"10000000-0000-4000-8000-000000000001","requestId":"10000000-0000-4000-8000-000000000002","expectedRevision":1,"reason":"Database visibility checked; maintenance finished"}
+```
+
+Read the current revision before a change. Retrying an identical request with the
+same `requestId` returns the recorded operation, including after a lost response
+or restart. Reusing its ID for different input/actor or submitting a stale
+revision returns `409`. Overlapping pause rules remain independent: resuming one
+does not release a table still held by another rule.
+
+Mutating commands require the active Archiver owner; a passive or stopping instance
+returns `409`. Status and preview remain available to authorized operators. When
+no selective rules remain, the boundary reports `running` rather than `paused`.
+
+A branch preview uses the writer's actual resolved final tables. Data destinations
+are `tablePrefix[_dataGroup]_data`; table packets use `_table`. A mixed packet is
+split at those destinations. A branch rule also pauses newly observed matching
+dataGroups. Once a final table is affected, **all** Archiver writes to that table
+are gated, including topics outside the selected branch. Preview can only list
+observed destinations; it does not assert that unseen dataGroups do not exist.
+
+Pause closes new table submissions before waiting for the admitted writer work.
+Check `boundary.phase`: `draining` still has in-flight work; `paused` means the
+Archiver flush promises have settled. `write-outcome-uncertain` retains a failed
+write whose database outcome may be unknown. Reconcile database visibility before
+resuming that case; the explicit resume field `confirmUnknownWriteOutcome: true`
+acknowledges the uncertainty. An HTTP response, ILP flush ACK, or empty local queue
+alone does not prove WAL application, replica visibility or exclusion of external
+writers. Query the database before destructive maintenance.
+
+### Independent pause and database failure
+
+Eligible parsed packet parts enter `event_storage/targets/queue.sqlite` before
+writing, using SQLite WAL with `synchronous=FULL`. Repeated equal MQTT payloads
+receive separate occurrence IDs. On database failure, **every** destination keeps
+its pending parts, even if another table is deliberately paused. Restarting while
+the database is down does not require successful protocol negotiation. Unpaused
+queues resume automatically with bounded batches/backoff; paused queues require
+an explicit resume. Healthy tables continue while another is paused.
+
+Live overflow and earlier file-spooled events still use `event_storage/*.event`.
+Those files are fsynced before acceptance. Stored replay removes its original only
+after the target journal accepts it durably. Legacy import retains the original
+source file while any part is paused or unacknowledged; persistent per-file/part
+receipts prevent repeating an already confirmed healthy part. Equal-content
+legacy files are distinct source occurrences.
+
+The startup-only `archiver.targetJournal` settings default to a 1 GiB SQLite
+page budget, a conservative half-budget for retained payloads/metadata overhead,
+64 MiB free-space reserve, and one million pending parts per target. In-flight
+journal replay is capped at 512 parts and 16 MiB. Status uses indexed per-target
+counters, not a scan through millions of queued files. The older overflow-file
+queue is reported separately and is not included in the SQLite page budget.
+A disk/quota failure fails acceptance and reports degraded storage health. It
+must not be bypassed by an unbounded fallback. No local disk policy can guarantee
+retention after disk exhaustion, corruption, or delivery that MQTT did not replay.
+
+`archiver-target-policy.json` contains bounded operator state, never payloads or
+connection credentials. The generic `runtime-state.manifest.json` makes this state
+available to Controller's normal runtime-state transfer. SDK application state
+also carries the reviewed policy and rejects a live handover if pending target
+writes remain. Neither contract copies the SQLite queue to another host: drain it
+first or retain/review the source queue separately. A restart retains both policy
+and queue. Do not delete either file to clear a pause. Backup tools must use a
+consistent SQLite snapshot or a stopped writer, including any WAL; copying only
+the live main database file is unsafe. Spool-excluding backups omit this queue too.
+
+Delivery is **not exactly-once**: a database may commit before its acknowledgement
+is lost, or before the local receipt is committed. Such rows stay for retry and
+may repeat in append mode. Preserve producer event IDs and use reviewed database
+deduplication where that guarantee is needed. These controls do not change topic
+paths, units, timestamps or ingestion mode.
+
+### Local verification
+
+```bash
+pnpm verify
+# Optional real-row read-back; only a disposable loopback QuestDB is accepted:
+ARCHIVER_TEST_QUESTDB=http://127.0.0.1:19000 node --import tsx --test tests/target-questdb.integration.test.ts
+
+# Actual built Archiver with a disposable MQTT broker and QuestDB:
+pnpm build
+ARCHIVER_TEST_QUESTDB=http://127.0.0.1:19000 ARCHIVER_TEST_MQTT=mqtt://127.0.0.1:18830 node --import tsx --test tests/archiver-process.integration.test.ts
+```
+
+The process test uses real MQTT, the built `dist/index.js`, SDK JWKS verification,
+registered service endpoint discovery, a lost HTTP response, and a process restart.
+Its authenticated GraphQL discovery service is a scoped fixture, not a full
+Controller-managed installation or Controller proxy test. Setting
+`ARCHIVER_TEST_QDB_CONTAINER` to an owned disposable container named
+`openhub-archiver-e2e-qdb-YYYYMMDD` enables an actual local database stop/start;
+otherwise database failure is injected at the local HTTP transport. Use
+`--test-concurrency=1` for the combined suite on memory-constrained machines.
+
+The local acceptance scope and release gates are recorded in
+[the target-control acceptance report](docs/target-control-acceptance.md).
+
+Before production activation, measure ingress and free disk space, review queue
+capacity and the unlock procedure, publish a reviewed release, and explicitly
+approve deployment. Publishing this release does not activate a production pause.
