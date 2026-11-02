@@ -209,7 +209,10 @@
             "handoverProtocol": {
               "description": "Opt-in controller-correlated MQTT handover protocol.",
               "type": "string",
-              "const": "correlated-v1"
+              "enum": [
+                "correlated-v1",
+                "correlated-v2"
+              ]
             },
             "supervisor": {
               "type": "object",
@@ -1429,6 +1432,94 @@
             },
             "servername": {
               "type": "string"
+            },
+            "publishQueue": {
+              "description": "Opt-in MQTT output persistence; does not persist input subscriptions.",
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "buffered",
+                    "durable"
+                  ]
+                },
+                "storage": {
+                  "default": "local",
+                  "type": "string",
+                  "enum": [
+                    "local",
+                    "runtime"
+                  ]
+                },
+                "directory": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "maxRecords": {
+                  "default": 10000,
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100000
+                },
+                "maxBytes": {
+                  "default": 67108864,
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 536870912
+                },
+                "memoryRecords": {
+                  "default": 256,
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 10000
+                },
+                "memoryBytes": {
+                  "default": 4194304,
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 67108864
+                },
+                "maxMessageBytes": {
+                  "default": 524288,
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1048576
+                },
+                "maxDiskBytes": {
+                  "default": 268435456,
+                  "type": "integer",
+                  "minimum": 1048576,
+                  "maximum": 1073741824
+                },
+                "minFreeBytes": {
+                  "default": 16777216,
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1073741824
+                },
+                "retryIntervalMs": {
+                  "default": 1000,
+                  "type": "integer",
+                  "minimum": 10,
+                  "maximum": 60000
+                },
+                "publishTimeoutMs": {
+                  "default": 10000,
+                  "type": "integer",
+                  "minimum": 10,
+                  "maximum": 60000
+                }
+              },
+              "required": [
+                "mode",
+                "directory"
+              ],
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
@@ -1974,6 +2065,27 @@
           "description": "Archiver runtime settings.",
           "type": "object",
           "properties": {
+            "targetJournal": {
+              "description": "Startup-only durable per-table journal limits. Defaults: 1 GiB database budget (half reserved for payloads), 64 MiB disk reserve, one million pending parts per table. Retained under event_storage/targets; never delete to resume a pause.",
+              "type": "object",
+              "properties": {
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 1048576,
+                  "maximum": 1099511627776
+                },
+                "reserveBytes": {
+                  "type": "integer",
+                  "minimum": 1048576,
+                  "maximum": 9007199254740991
+                },
+                "maxPendingPerTarget": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 10000000
+                }
+              }
+            },
             "legacySources": {
               "description": "Node-local allowlist of sealed legacy spool directories. Select by ID through the import API; never synchronize these host paths across controllers. Changes require archiver restart.",
               "maxItems": 16,

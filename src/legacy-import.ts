@@ -176,8 +176,9 @@ export class LegacyImportManager {
       hasLiveHeadroom: () => boolean;
       write: (
         event: LegacyEvent,
-        context: { startedAt: string },
+        context: { startedAt: string; eventKey: string },
       ) => Promise<LegacyWriteResult>;
+      acknowledged?: (eventKey: string) => void;
     },
   ) {
     if (options.sources.length > 16) fault("too-many-sources", 400);
@@ -839,6 +840,9 @@ export class LegacyImportManager {
     try {
       if (prepared.error) fault(prepared.error);
       const file = path.join(runtime.canonical!, entry.name);
+      const eventKey = createHash("sha256").update(JSON.stringify([
+        runtime.source.id, runtime.canonical, entry.name, entry.inode, entry.size, entry.modified,
+      ])).digest("hex");
       // The file may have changed while an earlier chunk awaited its ACK.
       const before = await fs.lstat(file);
       if (
@@ -858,7 +862,7 @@ export class LegacyImportManager {
       const result = !event
         ? ({ outcome: "quarantined", reason: "invalid-envelope" } as const)
         : await this.measure(runtime, "writeAck", () =>
-            this.options.write(event, { startedAt: job.startedAt! }),
+            this.options.write(event, { startedAt: job.startedAt!, eventKey }),
           );
       finalizeStarted = performance.now();
       await this.assertOwner(runtime);
@@ -874,6 +878,7 @@ export class LegacyImportManager {
         fault("source-file-changed");
       if (result.outcome === "written" || result.outcome === "duplicate") {
         await fs.unlink(file);
+        this.options.acknowledged?.(eventKey);
         job[result.outcome]++;
         if (result.outcome === "written") {
           job.rowsWritten += result.rows ?? 0;

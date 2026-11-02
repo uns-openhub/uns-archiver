@@ -16,6 +16,8 @@ import {
   type QuestDbBatchConfig,
   type QuestDbBatchDiagnostics,
 } from "./questdb-ilp-batcher.js";
+import { TargetJournal, TargetWriteDeferred, type JournalEntry } from "../target-journal.js";
+import { randomUUID } from "node:crypto";
 
 
 type QuestDbExecConfig = {
@@ -71,7 +73,37 @@ export type QuestDbEntityIdentityEvidence = {
   timeBasis: string;
 };
 
+export type TargetWritePayload = {
+  packet: IUnsPacket; prefix: string; meta?: UnsTopicMetadata; mode?: IngestMode;
+  identity?: QuestDbEntityIdentityEvidence; maxBatchWaitMs?: number;
+};
+type WriteOptions = { maxBatchWaitMs?: number; occurrenceId?: string; legacyKey?: string };
+
+/** Split only at actual writer destinations, using the same name function as ILP. */
+export function resolvePacketTargets(packet: IUnsPacket, prefix: string) {
+  return (["data", "table"] as const).flatMap(kind => {
+    const item = packet.message[kind];
+    if (!item) return [];
+    const message = { ...packet.message };
+    delete message[kind === "data" ? "table" : "data"];
+    return [{ kind, table: buildQuestDbTableName(prefix, item.dataGroup, kind === "data" ? "_data" : "_table"),
+      packet: { ...packet, message } }];
+  });
+}
+
 export class QuestDBWriter {
+  private targetJournal?: TargetJournal<TargetWritePayload>;
+  configureTargetJournal(options: Omit<ConstructorParameters<typeof TargetJournal<TargetWritePayload>>[0], "write">) {
+    if (this.targetJournal) throw new Error("Target journal already configured");
+    this.targetJournal = new TargetJournal<TargetWritePayload>({ ...options, write: entry => this.writeJournalEntry(entry) });
+    return this.targetJournal;
+  }
+  private async writeJournalEntry(entry: JournalEntry<TargetWritePayload>) {
+    const { packet, prefix, meta, mode, identity, maxBatchWaitMs } = entry.payload;
+    const resolved = resolvePacketTargets(packet, prefix);
+    if (resolved.length !== 1 || resolved[0].table !== entry.table) throw new Error("Retained target does not match packet; review required");
+    await this.writeUnsPacketDirect(packet, prefix, entry.topic, meta, mode, identity, { maxBatchWaitMs });
+  }
   private readonly questDbExecConfig: QuestDbExecConfig | null;
   private readonly clearedWindows = new Set<string>();
   private readonly createdTables = new Set<string>();
@@ -171,6 +203,9 @@ export class QuestDBWriter {
   // Add a public method to close the questDbOutput connection
   async close() {
     await this.batcher.close();
+    // Failed batches are owned by durable retry storage; discard only the
+    // redundant sender buffer after every admitted write has settled.
+    this.questDbOutput.reset();
     await this.questDbOutput.close();
   }
 
@@ -190,7 +225,29 @@ export class QuestDBWriter {
     topicMeta?: UnsTopicMetadata,
     ingestMode?: IngestMode,
     entityIdentity?: QuestDbEntityIdentityEvidence,
-    writeOptions?: { maxBatchWaitMs?: number },
+    writeOptions?: WriteOptions,
+  ) {
+    if (!this.targetJournal) return this.writeUnsPacketDirect(unsPacket, matchingTable, inputTopic, topicMeta, ingestMode, entityIdentity, writeOptions);
+    const id = writeOptions?.occurrenceId ?? randomUUID();
+    const entries = resolvePacketTargets(unsPacket, matchingTable).map(target => ({
+      id: `${id}:${target.kind}`, table: target.table, topic: String(inputTopic), legacyKey: writeOptions?.legacyKey,
+      payload: { packet: target.packet, prefix: matchingTable, meta: topicMeta, mode: ingestMode,
+        identity: entityIdentity, maxBatchWaitMs: writeOptions?.maxBatchWaitMs },
+    }));
+    const written = await this.targetJournal.submit(entries);
+    if (writeOptions?.legacyKey && !written) throw new TargetWriteDeferred("Target retained until pause/database recovery");
+    // Legacy receipts are removed only after LegacyImportManager deletes its original file.
+    if (!writeOptions?.legacyKey) this.targetJournal.acknowledge(entries.map(entry => entry.id));
+  }
+
+  private async writeUnsPacketDirect(
+    unsPacket: IUnsPacket,
+    matchingTable: string,
+    inputTopic: any,
+    topicMeta?: UnsTopicMetadata,
+    ingestMode?: IngestMode,
+    entityIdentity?: QuestDbEntityIdentityEvidence,
+    writeOptions?: WriteOptions,
   ) {
     const parseToMs = (field: string, value: unknown): number | null => {
       if (value === null || value === undefined) return null;
@@ -596,6 +653,8 @@ export class QuestDBWriter {
     const job = previous
       .catch(() => undefined)
       .then(async () => {
+        const prepare = (this.questDbOutput as Sender & { prepare?: () => Promise<void> }).prepare;
+        if (prepare) await prepare();
         await this.ensureTable(tableName, ingestMode, kind, columns);
         // Keep table setup/submission ordered, but do not make this table's
         // admission queue wait for the shared sender to flush. The batcher

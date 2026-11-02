@@ -14,7 +14,7 @@ export interface ProjectAppConfig {
         processName: string;
         handover?: boolean;
         /** Opt-in controller-correlated MQTT handover protocol. */
-        handoverProtocol?: "correlated-v1" | undefined;
+        handoverProtocol?: ("correlated-v1" | "correlated-v2") | undefined;
         /** Optional PM2/controller supervisor guard settings for this RTT instance. */
         supervisor?: {
             /** Enable controller/PM2 supervisor handling for this RTT instance. */
@@ -113,6 +113,22 @@ export interface ProjectAppConfig {
         cert?: string | undefined;
         key?: string | undefined;
         servername?: string | undefined;
+        /** Opt-in MQTT output persistence; does not persist input subscriptions. */
+        publishQueue?: {
+            enabled?: boolean;
+            mode: "buffered" | "durable";
+            storage?: "local" | "runtime";
+            directory: string;
+            maxRecords?: number;
+            maxBytes?: number;
+            memoryRecords?: number;
+            memoryBytes?: number;
+            maxMessageBytes?: number;
+            maxDiskBytes?: number;
+            minFreeBytes?: number;
+            retryIntervalMs?: number;
+            publishTimeoutMs?: number;
+        } | undefined;
     } | undefined;
     infra: {
         host?: string | undefined;
@@ -158,6 +174,12 @@ export interface ProjectAppConfig {
     } | undefined;
     /** Archiver runtime settings. */
     archiver?: {
+        /** Startup-only durable per-table journal limits. Defaults: 1 GiB database budget (half reserved for payloads), 64 MiB disk reserve, one million pending parts per table. Retained under event_storage/targets; never delete to resume a pause. */
+        targetJournal?: {
+            maxBytes?: number | undefined;
+            reserveBytes?: number | undefined;
+            maxPendingPerTarget?: number | undefined;
+        } | undefined;
         /** Node-local allowlist of sealed legacy spool directories. Select by ID through the import API; never synchronize these host paths across controllers. Changes require archiver restart. */
         legacySources?: {
             id: string;

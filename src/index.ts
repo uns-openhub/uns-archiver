@@ -1,8 +1,12 @@
+import { occurrenceId, persistEventFile } from "./durable-event-file.js";
+import { targetControlApi, targetCommandOpenApiSchema } from "./target-control-api.js";
+import { TargetStorageError } from "./target-journal.js";
 import { archiveInputReadiness } from "./archive-input-readiness.js";
 import { assessArchiveWriteHealth } from './archive-write-health.js';
 import { loadLegacySources } from "./legacy-source-file.js";
 import { TopicObservations } from "./topic-observations.js";
 import {
+  createApplicationHandoverContract,
   AuthClient,
   UnsProxyProcess,
   ConfigFile,
@@ -16,9 +20,9 @@ import {
   type IApiProxyOptions,
 } from "@uns-kit/core";
 import UnsMqttProxy from "@uns-kit/core/uns-mqtt/uns-mqtt-proxy.js";
-import { Sender } from "@questdb/nodejs-client";
+import { deferredQuestDbSender } from "./writers/deferred-questdb-sender.js";
 import { createHash, randomUUID } from "crypto";
-import { existsSync, mkdirSync, promises as fs, renameSync, unlinkSync, writeFileSync } from "fs";
+import { promises as fs } from "fs";
 import * as path from "path";
 import { buildServiceApiInteractions, type UnsProxyProcessWithApi } from "@uns-kit/api";
 
@@ -218,6 +222,7 @@ type ArchiverRuntimeConfig = {
   identityEnrichmentEnabled?: boolean;
   identityResolutionRetryMaxAgeMs?: number;
   traceIngest?: boolean;
+  targetJournal?: { maxBytes?: number; reserveBytes?: number; maxPendingPerTarget?: number };
 };
 
 type ArchiverMqttEvent = {
@@ -382,12 +387,24 @@ const CONTROL_OBJECT_ID: string = config.uns?.processName ?? "uns-archiver";
 
 // Initialize QuestDB ILP sender for data ingestion
 const questDbConfigurationString = resolveQuestDbConfigurationString(config.questdb);
-const questDbOutput = await Sender.fromConfig(questDbConfigurationString);
+const questDbOutput = deferredQuestDbSender(questDbConfigurationString);
 const questDbWriter = new QuestDBWriter(
   questDbOutput,
   questDbConfigurationString,
   config.questdb?.batch,
 );
+
+// Startup-only disk policy. The portable pause file contains no database credentials or event payloads.
+let fallbackStorageError: string | null = null;
+const targetJournal = questDbWriter.configureTargetJournal({
+  directory: path.join(EVENT_STORAGE_DIR, "targets"),
+  policyFile: path.resolve("archiver-target-policy.json"),
+  destinationId: createHash("sha256").update(resolveQuestDbPublicConfigurationString(config.questdb) ?? "unresolved").digest("hex"),
+  ...((config as any).archiver?.targetJournal ?? {}),
+  canReplay: () => !shuttingDown && !ingestionPaused && inputProcess?.isActive() === true,
+  onFault: message => logger.error(message),
+});
+const targetApi = targetControlApi(targetJournal, () => !shuttingDown && inputProcess?.isActive() === true);
 
 const estimateMqttEventBytes = (mqttEvent: { topic: any; message: any }): number => {
   const topic = String(mqttEvent.topic ?? "");
@@ -439,7 +456,7 @@ const storedReplay = new StoredEventReplay({
   eventFileExtension: EVENT_FILE_EXTENSION,
   processingExtension: EVENT_PROCESSING_EXTENSION,
   isReady: () => activeTopicsReady,
-  isStopping: () => shuttingDown || ingestionPaused,
+  isStopping: () => shuttingDown || ingestionPaused || inputProcess?.isActive() !== true,
   hasLiveHeadroom: () =>
     hasStoredReplayLiveHeadroom(
       ingestQueue?.snapshot(),
@@ -469,9 +486,10 @@ const legacyImports = new LegacyImportManager({
   instanceId: `${config.uns.processName}:${process.env.UNS_CONTROLLER_NAME ?? "standalone"}:${path.resolve(".")}`,
   policyDigest: legacyStoragePolicyDigest,
   acceptingCommands: () => !shuttingDown,
-  canWrite: () => !shuttingDown && latestQuestDbHealth?.healthy !== false,
+  canWrite: () => !shuttingDown && !ingestionPaused && inputProcess?.isActive() === true && latestQuestDbHealth?.healthy !== false,
   hasLiveHeadroom: () => hasStoredReplayLiveHeadroom(ingestQueue?.snapshot(), ingestQueueMaxEvents, ingestQueueMaxBytes),
   write: writeLegacyPacket,
+  acknowledged: key => targetJournal.acknowledgeLegacy(key),
 });
 const archiverShutdown = createArchiverShutdown(
   () => { shuttingDown = true; },
@@ -493,6 +511,7 @@ const archiverShutdown = createArchiverShutdown(
     },
     waitForStoredReplay: async () => {
       await Promise.all([storedReplay.close(), legacyImports.close()]);
+      await targetJournal.close();
     },
     closeQuestDb: async () => {
       await questDbWriter.close();
@@ -501,6 +520,7 @@ const archiverShutdown = createArchiverShutdown(
 );
 
 legacyImports.startBackground();
+targetJournal.start();
 const importApi = legacyImportApi(legacyImports, {
   owner: {
     ownerId: randomUUID(),
@@ -512,9 +532,9 @@ const importApi = legacyImportApi(legacyImports, {
   acceptingCommands: () => !shuttingDown,
 });
 
-async function writeLegacyPacket(event: LegacyEvent, context: { startedAt: string }): Promise<LegacyWriteResult> {
+async function writeLegacyPacket(event: LegacyEvent, context: { startedAt: string; eventKey: string }): Promise<LegacyWriteResult> {
   const mqttEvent = event as ArchiverMqttEvent;
-  const eventId = generateEventId(mqttEvent);
+  const eventId = context.eventKey;
   const confirmationId = `${legacyStoragePolicyDigest()}:${eventId}`;
   if (legacyConfirmedEventIds.has(confirmationId)) return { outcome: "duplicate" };
   if (inflightEventIds.has(eventId)) return { outcome: "deferred", reason: "event-inflight" };
@@ -536,7 +556,7 @@ async function writeLegacyPacket(event: LegacyEvent, context: { startedAt: strin
         // Historical validity does not depend on the current active-topic set.
         await questDbWriter.writeUnsPacket(packet, storage.tablePrefix, event.topic,
           topicMetadata[event.topic] ?? topicMetadata[sanitizeTopicName(event.topic)],
-          mode, identity.evidence ?? undefined, { maxBatchWaitMs: 25 });
+          mode, identity.evidence ?? undefined, { maxBatchWaitMs: 25, occurrenceId: context.eventKey, legacyKey: context.eventKey });
       },
     });
     if (result.outcome === "written") {
@@ -577,6 +597,14 @@ async function publishArchiverServiceMetadata() {
   if (previousIngestHealthy !== ingestHealth.healthy) {
     logger.info(`Archive ingest health is ${ingestHealth.state}${ingestHealth.message ? `: ${ingestHealth.message}` : "."}`);
   }
+  const targetStatus = targetJournal.snapshot();
+  const targetRetryBlocked = targetStatus.targets.some(target => !target.paused && Number(target.queued) > 0 && Number(target.retrying) > 0);
+  const targetHealth = {
+    id: "archiver-target-storage", label: "Archive target storage",
+    state: !targetStatus.healthy || fallbackStorageError || targetRetryBlocked ? "degraded" : "healthy",
+    healthy: targetStatus.healthy && !fallbackStorageError && !targetRetryBlocked, checkedAt: new Date().toISOString(),
+    message: fallbackStorageError ?? targetStatus.storageError ?? (targetRetryBlocked ? "Unpaused target writes are retained for retry; database acknowledgement is pending." : undefined),
+  };
   await serviceMetadataPublisher.publishServiceMetadata({
     serviceId: "uns-archiver",
     kind: "core",
@@ -593,7 +621,8 @@ async function publishArchiverServiceMetadata() {
         }
       : {}),
     extra: {
-      dependencies: [health, ingestHealth, writeHealth, currentInputReadiness(), ...(legacyImportHealth ? [legacyImportHealth] : [])],
+      dependencies: [health, ingestHealth, writeHealth, targetHealth, currentInputReadiness(), ...(legacyImportHealth ? [legacyImportHealth] : [])],
+      targetJournal: { ...targetStatus, policy: { revision: targetStatus.policy.revision, pausedRules: targetStatus.policy.rules.length } },
       questdbHealth: health,
       ingestHealth,
       ...(legacyImportHealth ? { legacyImportHealth } : {}),
@@ -1015,6 +1044,16 @@ async function setupApiProxy() {
       };
     }
     const serviceApiInteractions = buildServiceApiInteractions(processName, {
+      targets: {
+        topic: CONTROL_TOPIC, asset: CONTROL_ASSET, objectType: CONTROL_OBJECT_TYPE,
+        objectId: CONTROL_OBJECT_ID, attribute: "targets", method: "GET",
+        description: "Operator-only durable target queue and pause status.", handler: () => undefined,
+      },
+      targetControl: {
+        topic: CONTROL_TOPIC, asset: CONTROL_ASSET, objectType: CONTROL_OBJECT_TYPE,
+        objectId: CONTROL_OBJECT_ID, attribute: "target-control", method: "POST",
+        description: "Operator-only preview/pause/resume final QuestDB tables. Use requestId and expectedRevision. Controls Archiver writers only.", handler: () => undefined,
+      },
       control: {
         topic: CONTROL_TOPIC,
         asset: CONTROL_ASSET,
@@ -1095,6 +1134,11 @@ async function setupApiProxy() {
       "import-control", { ...serviceApiInteractions.importControl.options,
         requestBody: { required: true, description: "Legacy import command", schema: importCommandSchema } });
 
+    await apiProxy.get(CONTROL_TOPIC, CONTROL_ASSET, CONTROL_OBJECT_TYPE, CONTROL_OBJECT_ID,
+      "targets", serviceApiInteractions.targets.options);
+    await apiProxy.post(CONTROL_TOPIC, CONTROL_ASSET, CONTROL_OBJECT_TYPE, CONTROL_OBJECT_ID,
+      "target-control", { ...serviceApiInteractions.targetControl.options,
+        requestBody: { required: true, description: "Preview or revision-checked target pause/resume command", schema: targetCommandOpenApiSchema } });
     apiProxy.event.on("apiGetEvent", handleApiGetEvent);
     apiProxy.event.on("apiPostEvent", handleImportPostEvent);
     apiProxy.event.on("error", (err: any) => {
@@ -1143,6 +1187,7 @@ async function handleApiGetEvent(event: any) {
   const path = event?.req?.path ?? "";
   const action = (event?.req?.query?.action as string | undefined)?.toLowerCase();
   try {
+    if (path.endsWith("/targets")) { targetApi.get(event); return; }
     if (path.endsWith("/imports")) {
       importApi.get(event);
       return;
@@ -1157,6 +1202,7 @@ async function handleApiGetEvent(event: any) {
         activeTopics,
         topicMetadataCount: Object.keys(topicMetadata ?? {}).length,
         ...queueStatus,
+        targetJournal: targetJournal.snapshot(),
         storedReplay: storedReplay.diagnostics(),
         legacyImports: legacyImports.status(),
         inputReadiness: currentInputReadiness(),
@@ -1182,6 +1228,7 @@ async function handleApiGetEvent(event: any) {
 }
 
 async function handleImportPostEvent(event: any) {
+  if (event?.req?.path?.endsWith("/target-control")) { await targetApi.post(event); return; }
   if (!event?.req?.path?.endsWith("/import-control")) {
     event.res.status(404).json({ error: "unknown-import-endpoint" }); return;
   }
@@ -1235,6 +1282,16 @@ async function subscribeToTopics(topics: string[]) {
     const unsProxyProcess = new UnsProxyProcess(infraChannel.host, {
       processName: config.uns.processName,
       ...mqttChannelParameters(infraChannel),
+      handoverProtocol: config.uns.handoverProtocol,
+      handoverState: {
+        contract: createApplicationHandoverContract("archiver-target-policy-v1", {
+          storage: config.questdb.dataStorage,
+          destination: resolveQuestDbPublicConfigurationString(config.questdb),
+        }),
+        exportState: () => targetJournal.exportPolicy(),
+        validateState: value => targetJournal.validatePolicy(value),
+        importState: value => targetJournal.importPolicy(value),
+      },
       handoverShutdown: {
         onRelease: archiverShutdown.release,
         drain: archiverShutdown.drain,
@@ -1249,6 +1306,10 @@ async function subscribeToTopics(topics: string[]) {
       config.uns.handover!,
       {
         ...mqttChannelParameters(inputChannel),
+        handoverStateContract: createApplicationHandoverContract("archiver-raw-input-v1", {
+          topics: desiredTopics,
+          mode: "raw-uns-packet",
+        }),
         mqttSubToTopics: desiredTopics,
         subscribeThrottlingDelay: 0,
       }
@@ -1259,7 +1320,8 @@ async function subscribeToTopics(topics: string[]) {
       inputObservationAt = Date.now();
       publishInputReadinessChange(true);
     });
-    mqttInput.event.on("input", (mqttEvent) => {
+    mqttInput.event.on("input", (incoming) => {
+      const mqttEvent = { topic: incoming.topic, message: incoming.message, _archiverOccurrenceId: randomUUID() };
       try {
         if (String(mqttEvent?.topic ?? "") === ENTITY_BINDING_INVALIDATION_TOPIC) {
           handleEntityBindingInvalidation(mqttEvent?.message);
@@ -1274,7 +1336,7 @@ async function subscribeToTopics(topics: string[]) {
       } catch (error) {
         logger.error(`Failed to enqueue MQTT event: ${errorMessage(error)}`);
         const eventId = generateEventId(mqttEvent);
-        void saveEventToFile(mqttEvent, eventId);
+        void saveEventToFile(mqttEvent, eventId).catch(() => logger.error("MQTT event persistence failed; acceptance not confirmed."));
       }
     });
     inputHandlerInstalled = true;
@@ -1595,6 +1657,7 @@ async function processEvent(
       meta,
       ingestMode,
       entityIdentity.evidence ?? undefined,
+      { occurrenceId: eventId },
     );
 
     if (traceIngest) {
@@ -1622,6 +1685,9 @@ async function processEvent(
     }
 
     logger.error(`Error processing event: ${error?.message ?? String(error)}`);
+    // Never bypass a bounded target-journal failure with an unbounded file fallback.
+    // Stored replay retains its original file; live input reports failed acceptance.
+    if (error instanceof TargetStorageError) throw error;
     if (error instanceof NonRetryableError) {
       logger.warn(`Dropping non-retryable event on topic '${inputTopic}': ${error.message}`);
       return true;
@@ -1652,21 +1718,8 @@ async function processStoredEvents(): Promise<void> {
  * @param mqttEvent - The MQTT event.
  * @returns A unique string ID.
  */
-function generateEventId(mqttEvent: { topic: any; message: any }): string {
-  // Combine topic and message data to create a unique ID
-  const topic = mqttEvent.topic ?? "";
-  const messageData = JSON.stringify(mqttEvent.message);
-  const hash = hashString(topic + messageData);
-  return hash;
-}
-
-/**
- * Hashes a string to create a unique representation.
- * @param str - The string to hash.
- * @returns A hash of the string.
- */
-function hashString(str: string): string {
-  return createHash("sha256").update(str).digest("hex");
+function generateEventId(mqttEvent: { topic: any; message: any; [key: string]: unknown }): string {
+  return occurrenceId(mqttEvent);
 }
 
 function storedControlStatus(action?: string) {
@@ -1689,84 +1742,17 @@ function requestStoredEventReplay(): void {
  * @param mqttEvent - The MQTT event to save.
  * @param eventId - The unique ID of the event.
  */
-async function saveEventToFile(
-  mqttEvent: any,
-  eventId: string
-) {
-  // Attach the ID to the event
-  const eventWithId = { id: eventId, ...mqttEvent };
-
-  const uniqueFileName = `${eventId}${EVENT_FILE_EXTENSION}`;
-  const finalFileName = path.join(EVENT_STORAGE_DIR, uniqueFileName);
-  const tempFileName = path.join(
-    EVENT_STORAGE_DIR,
-    `${eventId}.${process.pid}.${Date.now()}.tmp`,
-  );
-  const data = JSON.stringify(eventWithId);
-
-  logger.info(`Saving event to the local filesystem as ${finalFileName}`);
-  try {
-    await ensureEventStorageDirectories();
-    try {
-      await fs.access(finalFileName);
-      logger.debug(`Event already queued on disk: ${uniqueFileName}`);
-      return;
-    } catch {
-      // File does not exist, continue.
-    }
-
-    await fs.writeFile(tempFileName, data, { encoding: "utf-8", flag: "wx" });
-    try {
-      await fs.rename(tempFileName, finalFileName);
-    } catch (error: any) {
-      if (error?.code === "EEXIST") {
-        await fs.unlink(tempFileName).catch(() => undefined);
-        logger.debug(`Event already queued on disk during rename: ${uniqueFileName}`);
-        return;
-      }
-      throw error;
-    }
-    logger.debug(`Event saved successfully to ${finalFileName}`);
-  } catch (error: any) {
-    logger.error(`Failed to save event to ${finalFileName}: ${error.message}`);
-    await fs.unlink(tempFileName).catch(() => undefined);
-  }
+async function saveEventToFile(mqttEvent: any, eventId: string) {
+  saveEventToFileSync(mqttEvent, eventId);
 }
 
 function saveEventToFileSync(mqttEvent: any, eventId: string): void {
-  const eventWithId = { id: eventId, ...mqttEvent };
-  const uniqueFileName = `${eventId}${EVENT_FILE_EXTENSION}`;
-  const finalFileName = path.join(EVENT_STORAGE_DIR, uniqueFileName);
-  const tempFileName = path.join(
-    EVENT_STORAGE_DIR,
-    `${eventId}.${process.pid}.${Date.now()}.tmp`,
-  );
-
   try {
-    mkdirSync(EVENT_STORAGE_DIR, { recursive: true });
-    mkdirSync(FAILED_EVENT_STORAGE_DIR, { recursive: true });
-    if (existsSync(finalFileName)) {
-      logger.debug(`Event already queued on disk: ${uniqueFileName}`);
-      return;
-    }
-    writeFileSync(tempFileName, JSON.stringify(eventWithId), { encoding: "utf-8", flag: "wx" });
-    try {
-      renameSync(tempFileName, finalFileName);
-    } catch (error: any) {
-      if (error?.code === "EEXIST") {
-        unlinkSync(tempFileName);
-        logger.debug(`Event already queued on disk during rename: ${uniqueFileName}`);
-        return;
-      }
-      throw error;
-    }
-    logger.debug(`Event saved successfully to ${finalFileName}`);
-  } catch (error: any) {
-    try {
-      if (existsSync(tempFileName)) unlinkSync(tempFileName);
-    } catch {
-      // The next overflow or stored-event pass can safely continue.
-    }
+    persistEventFile(EVENT_STORAGE_DIR, { ...mqttEvent, id: eventId }, eventId);
+    fallbackStorageError = null;
+  } catch (error) {
+    fallbackStorageError = "Event file persistence failed; disk acceptance is not confirmed.";
+    logger.error(fallbackStorageError);
     throw error;
   }
 }

@@ -1,0 +1,7 @@
+{
+  "protocol": 1,
+  "file": "archiver-target-policy.json",
+  "schema": "archiver-target-policy.schema.json",
+  "compatibility": "archiver-target-policy-v1",
+  "crossController": "public-config"
+}

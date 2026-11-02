@@ -58,3 +58,7 @@ event_storage
 
 # Host-local recovery allowlist
 legacy-import-sources.json
+
+# Operator-owned portable pause policy; copied by the generic Runtime state contract.
+archiver-target-policy.json
+archiver-target-policy.json.*.tmp
