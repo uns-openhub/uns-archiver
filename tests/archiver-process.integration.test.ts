@@ -246,7 +246,7 @@ test(
       clean: true,
     });
     const routes = new Map<string, any>();
-    const observations = { metadataPackets: 0, inputReady: false };
+    const observations: { metadataPackets: number; inputReady: boolean; topicExclusion?: Record<string, unknown> } = { metadataPackets: 0, inputReady: false };
     client.on("message", (topic: string, bytes: Buffer) => {
       try {
         const value = JSON.parse(bytes.toString());
@@ -613,7 +613,7 @@ test(
         "resumed rows visible",
         async () => (await readRows(0)).length === 6,
       );
-      const actual = await Promise.all([0, 1, 2].map(readRows));
+      let actual = await Promise.all([0, 1, 2].map(readRows));
       for (let index = 0; index < tables.length; index++)
         assert.deepEqual(actual[index], expected.get(tables[index]));
       const finalStatus = await get("targets");
@@ -626,6 +626,31 @@ test(
       await stopProcess("SIGTERM");
       start();
       await ready();
+      // Exclude one subtree through the same configuration file used by the
+      // installed process. Wait for its normal refresh, without restarting it.
+      config.questdb.excludeTopics = [topics[0].split("/").slice(0, -1).join("/") + "/#"];
+      await fs.writeFile(path.join(root, "config.json"), JSON.stringify(config), { mode: 0o600 });
+      await waitFor("live topic exclusion config refresh", async () => {
+        const state = await get("topics");
+        return state?.topicAdmission?.excludeTopics?.[0] === config.questdb.excludeTopics[0];
+      }, 60000);
+      await client.publishAsync(topics[0], JSON.stringify({ version: "2.0.0", message: { data: { dataGroup: "paused",
+        time: new Date(1793700000000 + 99000).toISOString(), value: 99, uom: "kWh" } } }), { qos: 1 });
+      await publish(1, 66);
+      await waitFor("excluded MQTT event counted and unrelated row written", async () => {
+        const state = await get("topics"); return state?.topicAdmission?.excludedEvents === 1 && (await readRows(1)).length === 5;
+      });
+      assert.equal((await readRows(0)).length, 6);
+      assert.equal((await get("targets")).targets.reduce((n: number, target: any) => n + target.queued, 0), 0);
+      config.questdb.excludeTopics = [];
+      await fs.writeFile(path.join(root, "config.json"), JSON.stringify(config), { mode: 0o600 });
+      await stopProcess("SIGTERM"); start(); await ready();
+      assert.deepEqual((await get("topics")).topicAdmission.excludeTopics, []);
+      await publish(0, 77);
+      await waitFor("previously excluded topic restored", async () => (await readRows(0)).length === 7);
+      actual = await Promise.all([0, 1, 2].map(readRows));
+      for (let index = 0; index < tables.length; index++) assert.deepEqual(actual[index], expected.get(tables[index]));
+      observations.topicExclusion = { liveReload: true, excludedNewEvents: 1, excludedRowsWritten: 0, healthyRowsWritten: 1, clearedAfterRestart: true };
       const cooperativeExit = once(child!, "exit");
       child!.send({
         type: "process:msg",

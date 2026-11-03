@@ -4,10 +4,46 @@ import {
   targetCommandSchema,
 } from "./target-journal.js";
 import { z, ZodError } from "zod";
+import type { OperatorOperationDefinition } from "@uns-kit/core/runtime/operator-api.js";
+import { markOperatorNotApplied } from "@uns-kit/api/operator-api-authority.js";
 
 export const targetCommandOpenApiSchema = z.toJSONSchema(targetCommandSchema, {
   target: "draft-7",
 });
+
+export const targetStatusOperatorOperations: OperatorOperationDefinition[] = [
+  {
+    protocol: 1,
+    id: "targets.status",
+    title: "Read target pauses and queue status",
+    kind: "read",
+    maxResponseBytes: 262144,
+    requestSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+];
+export const targetControlOperatorOperations: OperatorOperationDefinition[] =
+  targetCommandSchema.options.map((schema) => {
+    const action = schema.shape.action.value;
+    return {
+      protocol: 1,
+      id: "targets." + action,
+      title:
+        action === "preview"
+          ? "Preview target selection"
+          : action === "pause"
+            ? "Pause selected archive targets"
+            : "Resume a target pause",
+      kind: action === "preview" ? "read" : "command",
+      requestSchema: z.toJSONSchema(schema, { target: "draft-7" }),
+      ...(action === "preview"
+        ? {}
+        : { writeDomain: "target-policy", replay: "request-id-v1" as const }),
+    };
+  });
 
 /** Only call after UnsApiProxy has verified the JWT signature, expiry and path grant. */
 export function verifiedOperator(request: any): string {
@@ -70,6 +106,9 @@ function fail(event: any, error: unknown) {
       : error instanceof ZodError
         ? 400
         : 503;
+  // Validation/revision/permission rejection happens before a policy mutation.
+  // Storage/network failures can follow a commit and must remain uncertain.
+  if (status >= 400 && status < 500) markOperatorNotApplied(event.res);
   event.res.status(status).json({
     error:
       error instanceof TargetControlError

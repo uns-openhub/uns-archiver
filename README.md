@@ -733,7 +733,38 @@ acknowledges the uncertainty. An HTTP response, ILP flush ACK, or empty local qu
 alone does not prove WAL application, replica visibility or exclusion of external
 writers. Query the database before destructive maintenance.
 
-### Independent pause and database failure
+### Topic exclusions (local candidate)
+
+To keep a broad storage rule while skipping new input from one branch:
+
+```json
+{
+  "questdb": {
+    "dataStorage": [{ "topic": "example/#", "tablePrefix": "plant" }],
+    "excludeTopics": ["example/maintenance/#"]
+  }
+}
+```
+
+Keep the existing QuestDB connection settings alongside these fields. Use ordinary
+MQTT filters, without `!` or an extra leading `/`: `example/maintenance/#` excludes that root
+and every child; `example/+/reading` matches one level; a filter without wildcards
+matches exactly that topic. Exclusions win over every inclusion rule. Omitted or
+empty `excludeTopics` preserves current behavior. The existing configuration
+editor/schema exposes the field; changes take effect at the normal configuration
+refresh (currently 45 seconds), or after ordinary startup. Inspect `/topics` →
+`topicAdmission.excludeTopics` and `excludedEvents` for the effective filters and
+process-lifetime excluded-message count. Removing the filter permits future input;
+events deliberately excluded earlier cannot be recovered by clearing the filter.
+
+MQTT subscriptions may stay broad because the broker cannot subtract an exclusion
+from `#`. Excluded occurrences are rejected before the Archiver accepts them into
+RAM/disk queues. This applies to both data and table messages for that topic.
+Already accepted files/journal records and legacy imports still follow their
+existing replay policy; existing database history is retained. This setting is
+not a maintenance pause. Use target pause when pending writes must also stop.
+
+## Independent pause and database failure
 
 Eligible parsed packet parts enter `event_storage/targets/queue.sqlite` before
 writing, using SQLite WAL with `synchronous=FULL`. Repeated equal MQTT payloads
@@ -820,3 +851,17 @@ The local acceptance scope and release gates are recorded in
 Before production activation, measure ingress and free disk space, review queue
 capacity and the unlock procedure, publish a reviewed release, and explicitly
 approve deployment. Publishing this release does not activate a production pause.
+
+## Registered operator operations (local candidate)
+
+The Archiver opts its existing target-control endpoints into the shared SDK
+operator contract: `targets.status`, `targets.preview`, `targets.pause`, and
+`targets.resume`. After the corresponding SDK/Controller/application releases,
+Controller MCP clients can discover/read/review/confirm these operations without
+receiving an operator JWT or sending arbitrary HTTP requests. Application-owned
+revision checks, durable receipts, pause boundaries and queue retention remain
+unchanged. Old MCP tokens gain no grant automatically; execution requires an
+explicitly granted write tool and exact reviewed payload.
+
+This is currently source/local acceptance, not a deployed production control.
+See [operator and exclusion acceptance](docs/operator-api-acceptance.md).
