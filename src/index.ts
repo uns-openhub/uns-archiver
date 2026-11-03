@@ -1,5 +1,6 @@
 import { occurrenceId, persistEventFile } from "./durable-event-file.js";
 import { targetControlApi, targetCommandOpenApiSchema } from "./target-control-api.js";
+import { assertStoredQueueDrainedForHandover, createArchiverHandoverState } from "./archiver-handover-state.js";
 import { TargetStorageError } from "./target-journal.js";
 import { archiveInputReadiness } from "./archive-input-readiness.js";
 import { assessArchiveWriteHealth } from './archive-write-health.js';
@@ -191,6 +192,15 @@ let lastTopicsRefreshAt: number | null = null;
 let activeTopicsReady = false;
 let activeTopicsAuthoritative = false;
 let shuttingDown = false;
+let handoverDraining = false;
+const maintenanceTimers = new Set<ReturnType<typeof setInterval>>();
+let replayTimer: ReturnType<typeof setTimeout> | undefined;
+let apiRestartTimer: ReturnType<typeof setTimeout> | undefined;
+function maintenanceInterval(work: () => unknown, milliseconds: number) {
+  const timer = setInterval(() => { if (!shuttingDown) work(); }, milliseconds);
+  maintenanceTimers.add(timer);
+  return timer;
+}
 let inputProcess: UnsProxyProcess | undefined;
 let latestQuestDbHealth: QuestDbDependencyHealth | null = null;
 let latestIngestHealth: IngestHealth | null = null;
@@ -396,12 +406,13 @@ const questDbWriter = new QuestDBWriter(
 
 // Startup-only disk policy. The portable pause file contains no database credentials or event payloads.
 let fallbackStorageError: string | null = null;
+let lastDurableFileAt = 0;
 const targetJournal = questDbWriter.configureTargetJournal({
   directory: path.join(EVENT_STORAGE_DIR, "targets"),
   policyFile: path.resolve("archiver-target-policy.json"),
   destinationId: createHash("sha256").update(resolveQuestDbPublicConfigurationString(config.questdb) ?? "unresolved").digest("hex"),
   ...((config as any).archiver?.targetJournal ?? {}),
-  canReplay: () => !shuttingDown && !ingestionPaused && inputProcess?.isActive() === true,
+  canReplay: () => !ingestionPaused && (handoverDraining || (!shuttingDown && inputProcess?.isActive() === true)),
   onFault: message => logger.error(message),
 });
 const targetApi = targetControlApi(targetJournal, () => !shuttingDown && inputProcess?.isActive() === true);
@@ -492,9 +503,20 @@ const legacyImports = new LegacyImportManager({
   acknowledged: key => targetJournal.acknowledgeLegacy(key),
 });
 const archiverShutdown = createArchiverShutdown(
-  () => { shuttingDown = true; },
+  () => {
+    shuttingDown = true;
+    for (const timer of maintenanceTimers) clearInterval(timer);
+    maintenanceTimers.clear();
+    clearTimeout(replayTimer);
+    clearTimeout(apiRestartTimer);
+    metadataRefresh.close();
+  },
   {
     stopMqtt: async () => {
+      // This proxy consumes data only. Flush its SDK housekeeping publications
+      // even when the application is a passive successor; do not activate input
+      // or the database writer just to stop the process cleanly.
+      mqttInput?.setPublisherActive();
       if (inputProcess) await inputProcess.shutdown();
       else if (mqttInput) await mqttInput.stop();
     },
@@ -582,8 +604,9 @@ function currentInputReadiness() {
 }
 
 async function publishArchiverServiceMetadata() {
-  if (!serviceMetadataPublisher) return;
+  if (shuttingDown || !serviceMetadataPublisher) return;
   const health = latestQuestDbHealth ?? (await refreshQuestDbHealth());
+  if (shuttingDown) return;
   const previousIngestHealthy = latestIngestHealth?.healthy;
   const inspection = storedReplay.snapshot();
   const ingestHealth = assessIngestHealth(
@@ -641,7 +664,7 @@ function publishInputReadinessChange(force = false) {
     logger.warn("Archive input readiness publication failed; confirmation remains pending.");
   }).finally(() => { inputReadinessPublishInFlight = false; });
 }
-setInterval(publishInputReadinessChange, 5000).unref();
+maintenanceInterval(publishInputReadinessChange, 5000).unref();
 
 async function refreshAndPublishQuestDbHealth() {
   const previousHealthy = latestQuestDbHealth?.healthy;
@@ -744,7 +767,7 @@ const getObservedDataGroups = (topic: string, suffix: "_data" | "_table"): Array
   topicObservations.groups(sanitizeTopicName(topic), suffix);
 
 // Periodically clean up the processed events cache to prevent it from growing indefinitely
-setInterval(() => {
+maintenanceInterval(() => {
   processedEventIds.clear();
   logger.info("Cleared processed events cache.");
 }, 3600000); // Every hour
@@ -774,12 +797,12 @@ if (isControllerManagedRuntime()) {
   await registerArchiverService();
 }
 
-setInterval(async () => {
+maintenanceInterval(async () => {
   await refreshActiveTopics();
 }, TOPICS_REFRESH_INTERVAL);
 
 const scheduleStoredEventReplay = () => {
-  setTimeout(async () => {
+  replayTimer = setTimeout(async () => {
     try {
       await processStoredEvents();
     } finally {
@@ -789,7 +812,7 @@ const scheduleStoredEventReplay = () => {
 };
 scheduleStoredEventReplay();
 
-setInterval(async () => {
+maintenanceInterval(async () => {
   try {
     const { dataStorageChanged, identitySubscriptionChanged } = await reloadConfig();
     if (dataStorageChanged || identitySubscriptionChanged) {
@@ -804,11 +827,11 @@ setInterval(async () => {
   }
 }, CONFIG_REFRESH_INTERVAL);
 
-setInterval(async () => {
+maintenanceInterval(async () => {
   await publishQuestDbMapping();
 }, MAPPING_PUBLISH_INTERVAL);
 
-setInterval(async () => {
+maintenanceInterval(async () => {
   try {
     await refreshAndPublishQuestDbHealth();
   } catch (error) {
@@ -816,7 +839,7 @@ setInterval(async () => {
   }
 }, QUESTDB_HEALTHCHECK_INTERVAL);
 
-setInterval(async () => {
+maintenanceInterval(async () => {
   if (!apiProxy) {
     await setupApiProxy();
   }
@@ -989,17 +1012,55 @@ async function publishQuestDbMappingSnapshot() {
   }
 }
 
-async function setupApiProxy() {
-  if (apiProxy) return;
+function archiverProcess(): UnsProxyProcessWithApi {
+  if (inputProcess) return inputProcess as UnsProxyProcessWithApi;
   const infraChannel = resolveMqttChannel(config.infra);
+  const owner = new UnsProxyProcess(infraChannel.host, {
+    processName: config.uns.processName,
+    ...mqttChannelParameters(infraChannel),
+    handoverProtocol: config.uns.handoverProtocol,
+    deferHandoverUntilReady: true,
+    handoverState: createArchiverHandoverState({
+      contract: createApplicationHandoverContract("archiver-target-policy-v1", {
+        storage: config.questdb.dataStorage,
+        destination: resolveQuestDbPublicConfigurationString(config.questdb),
+      }),
+      isPaused: () => ingestionPaused,
+      isSourceActive: () => inputProcess?.isActive() === true,
+      journal: targetJournal,
+      assertSourceReady: () => {
+        if (fallbackStorageError) throw new Error("Archiver durable file storage has failed; migration is blocked.");
+        if (latestQuestDbHealth?.healthy === false) throw new Error("Archiver database is unavailable; keep the source and its queue before migration.");
+        assertStoredQueueDrainedForHandover(storedReplay.diagnostics(), lastDurableFileAt);
+      },
+    }),
+    handoverShutdown: {
+      onRelease: () => {
+        mqttInput?.setPublisherActive();
+        handoverDraining = true;
+        archiverShutdown.release();
+      },
+      drain: async () => {
+        try { await archiverShutdown.drainForHandover(); }
+        finally { handoverDraining = false; }
+      },
+      timeoutMs: 30_000,
+    },
+  });
+  inputProcess = owner;
+  serviceMetadataPublisher = owner as UnsProxyProcessWithApi;
+  return serviceMetadataPublisher;
+}
 
+function advertiseArchiverReadiness(): void {
+  if (inputHandlerInstalled && apiProxy) inputProcess?.enableMigrationDrain();
+}
+
+async function setupApiProxy() {
+  if (shuttingDown || apiProxy) return;
   const apiOptions = buildApiOptions();
   try {
-    const processWithApi = new UnsProxyProcess(infraChannel.host, {
-      processName: config.uns.processName,
-      ...mqttChannelParameters(infraChannel),
-    }) as UnsProxyProcessWithApi;
-    serviceMetadataPublisher = processWithApi;
+    const processWithApi = archiverProcess();
 
     apiProxy = await processWithApi.createApiProxy("unsArchiverApi", apiOptions);
     const apiBasePrefix =
@@ -1146,6 +1207,7 @@ async function setupApiProxy() {
       logger.error(`API proxy error: ${reason}, scheduling restart...`);
       scheduleApiProxyRestart();
     });
+    advertiseArchiverReadiness();
     logger.info("Archiver control and legacy import APIs ready.");
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
@@ -1154,9 +1216,10 @@ async function setupApiProxy() {
 }
 
 function scheduleApiProxyRestart() {
-  if (apiRestartScheduled) return;
+  if (shuttingDown || apiRestartScheduled) return;
   apiRestartScheduled = true;
-  setTimeout(async () => {
+  apiRestartTimer = setTimeout(async () => {
+    if (shuttingDown) return;
     apiRestartScheduled = false;
     apiProxy = undefined;
     await setupApiProxy();
@@ -1279,26 +1342,7 @@ async function subscribeToTopics(topics: string[]) {
   const inputChannel = resolveMqttChannel(config.infra, config.input);
 
   if (!mqttInput) {
-    const unsProxyProcess = new UnsProxyProcess(infraChannel.host, {
-      processName: config.uns.processName,
-      ...mqttChannelParameters(infraChannel),
-      handoverProtocol: config.uns.handoverProtocol,
-      handoverState: {
-        contract: createApplicationHandoverContract("archiver-target-policy-v1", {
-          storage: config.questdb.dataStorage,
-          destination: resolveQuestDbPublicConfigurationString(config.questdb),
-        }),
-        exportState: () => targetJournal.exportPolicy(),
-        validateState: value => targetJournal.validatePolicy(value),
-        importState: value => targetJournal.importPolicy(value),
-      },
-      handoverShutdown: {
-        onRelease: archiverShutdown.release,
-        drain: archiverShutdown.drain,
-        timeoutMs: 30_000,
-      },
-    });
-    inputProcess = unsProxyProcess;
+    const unsProxyProcess = archiverProcess();
     mqttInput = await unsProxyProcess.createUnsMqttProxy(
       inputChannel.host,
       "unsArchiverInput",
@@ -1352,6 +1396,7 @@ async function subscribeToTopics(topics: string[]) {
     }
     subscribedTopicFilters = delta.next;
   }
+  advertiseArchiverReadiness();
 }
 
 function handleEntityBindingInvalidation(message: unknown): void {
@@ -1725,7 +1770,7 @@ function generateEventId(mqttEvent: { topic: any; message: any; [key: string]: u
 function storedControlStatus(action?: string) {
   return storedReplayControlStatus(action, {
     getPaused: () => ingestionPaused,
-    setPaused: (paused) => { ingestionPaused = paused; },
+    setPaused: (paused) => { targetJournal.setGlobalPaused(paused); ingestionPaused = paused; },
     requestReplay: requestStoredEventReplay,
     snapshot: () => storedReplay.snapshot(),
   });
@@ -1749,6 +1794,7 @@ async function saveEventToFile(mqttEvent: any, eventId: string) {
 function saveEventToFileSync(mqttEvent: any, eventId: string): void {
   try {
     persistEventFile(EVENT_STORAGE_DIR, { ...mqttEvent, id: eventId }, eventId);
+    lastDurableFileAt = Date.now();
     fallbackStorageError = null;
   } catch (error) {
     fallbackStorageError = "Event file persistence failed; disk acceptance is not confirmed.";

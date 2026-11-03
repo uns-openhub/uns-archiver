@@ -1,6 +1,6 @@
 {
   "name": "uns-archiver",
-  "version": "5.2.28",
+  "version": "5.2.29",
   "description": "UNS OpenHub add-on that archives UNS data and table packets to QuestDB.",
   "private": true,
   "license": "MIT",
@@ -16,11 +16,17 @@
   "unsDatahub": {
     "schemaVersion": 1,
     "kind": "addon",
-    "controllerCompatibility": ">=2 <3"
+    "controllerCompatibility": ">=2.2.61 <3",
+    "mqttDrain": {
+      "protocolVersion": 1
+    },
+    "mqttHandover": {
+      "protocolVersion": 2
+    }
   },
   "type": "module",
   "scripts": {
-    "test": "tsx --test tests/**/*.test.ts",
+    "test": "tsx --test --test-concurrency=1 tests/**/*.test.ts",
     "typecheck": "tsc --noEmit",
     "clean": "rimraf dist",
     "build": "pnpm run clean && tsc -p tsconfig.json",

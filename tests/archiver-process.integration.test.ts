@@ -10,6 +10,7 @@ import { createRequire } from "node:module";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { once } from "node:events";
+import { MQTT_COOPERATIVE_STOP_TOPIC } from "@uns-kit/core/runtime/mqtt-drain.js";
 
 const endpoint = process.env.ARCHIVER_TEST_QUESTDB;
 const broker = process.env.ARCHIVER_TEST_MQTT;
@@ -259,9 +260,12 @@ test(
     await client.subscribeAsync(`uns-infra/uns-archiver/#`);
     let child: ReturnType<typeof spawn> | undefined;
     let generation = 0;
+    let launchId = "";
+    let passiveChild: ReturnType<typeof spawn> | undefined;
     const logStreams: ReturnType<typeof createWriteStream>[] = [];
     const start = () => {
       generation++;
+      launchId = randomUUID();
       routes.clear();
       const stream = createWriteStream(
         path.join(root, `archiver-${generation}.log`),
@@ -274,8 +278,9 @@ test(
           PATH: process.env.PATH,
           NODE_ENV: "test",
           UNS_SERVICE_TOKEN_FILE: path.join(root, "service-token"),
+          UNS_HANDOVER_LAUNCH_ID: launchId,
         },
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["ignore", "pipe", "pipe", "ipc"],
       });
       child.stdout!.pipe(stream, { end: false });
       child.stderr!.pipe(stream, { end: false });
@@ -410,14 +415,72 @@ test(
       });
       start();
       await ready();
-      const premature = await post({
-        action: "pause",
-        requestId: randomUUID(),
-        expectedRevision: 0,
-        reason: "Passive-owner guard",
-        selector: { tables: [tables[0]] },
+      // Readiness metadata is now published only by the active SDK owner.
+      // Verify a genuinely passive successor instead of assuming a startup race.
+      const passiveRoot = path.join(root, "passive");
+      await fs.mkdir(passiveRoot, { mode: 0o700 });
+      await fs.writeFile(
+        path.join(passiveRoot, "config.json"),
+        JSON.stringify({
+          ...config,
+          uns: { ...config.uns, instanceMode: "wait", handover: true },
+        }),
+        { mode: 0o600 },
+      );
+      await fs.copyFile(
+        path.join(root, "package.json"),
+        path.join(passiveRoot, "package.json"),
+      );
+      const passiveLog = path.join(root, "archiver-passive.log");
+      await fs.writeFile(passiveLog, "", { mode: 0o600 });
+      const stream = createWriteStream(passiveLog, { mode: 0o600 });
+      logStreams.push(stream);
+      passiveChild = spawn(
+        process.execPath,
+        [path.join(repo, "dist/index.js")],
+        {
+          cwd: passiveRoot,
+          env: {
+            PATH: process.env.PATH,
+            NODE_ENV: "test",
+            UNS_SERVICE_TOKEN_FILE: path.join(root, "service-token"),
+            UNS_HANDOVER_ID: `passive-test-${id}`,
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      passiveChild.stdout!.pipe(stream, { end: false });
+      passiveChild.stderr!.pipe(stream, { end: false });
+      passiveChild.once("close", () => stream.end());
+      const passivePort = await waitFor("passive API listening", async () => {
+        const text = await fs.readFile(passiveLog, "utf8");
+        return (
+          [
+            ...text.matchAll(/API listening on http:\/\/[^:\s]+:(\d+)\/api/g),
+          ].at(-1)?.[1] || false
+        );
       });
-      assert.equal(premature.status, 409);
+      const passiveUrl = new URL(routeUrl("target-control")!);
+      passiveUrl.port = String(passivePort);
+      const premature = await fetch(passiveUrl, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${operatorToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "pause",
+          requestId: randomUUID(),
+          expectedRevision: 0,
+          reason: "Passive-owner guard",
+          selector: { tables: [tables[0]] },
+        }),
+      });
+      assert.equal(premature.status, 503); // Existing shared SDK ownership gate.
+      const passiveExit = once(passiveChild, "exit");
+      passiveChild.kill("SIGTERM");
+      const [passiveCode] = await passiveExit;
+      assert.equal(passiveCode, 0);
       assert.equal((await get("targets")).policy.revision, 0);
       assert.equal((await fetch(routeUrl("targets")!)).status, 401);
       assert.equal(
@@ -560,6 +623,27 @@ test(
         0,
       );
       assert.ok(discoveryReads >= 2);
+      await stopProcess("SIGTERM");
+      start();
+      await ready();
+      const cooperativeExit = once(child!, "exit");
+      child!.send({
+        type: "process:msg",
+        data: { type: MQTT_COOPERATIVE_STOP_TOPIC, protocol: 1, launchId },
+      });
+      let cooperativeTimer: ReturnType<typeof setTimeout> | undefined;
+      const cooperativeResult = await Promise.race([
+        cooperativeExit,
+        new Promise((resolve) => {
+          cooperativeTimer = setTimeout(() => resolve("timeout"), 15000);
+        }),
+      ]).finally(() => clearTimeout(cooperativeTimer));
+      assert.notEqual(
+        cooperativeResult,
+        "timeout",
+        "SDK cooperative Stop must exit naturally without a forced signal",
+      );
+      assert.equal(child!.exitCode, 0);
       const summary = {
         actualProcess: true,
         controllerDiscovery:
@@ -569,6 +653,7 @@ test(
           ? "actual local container stop/start"
           : "local HTTP injection",
         processGenerations: generation,
+        cooperativeStopExit: 0,
         rowsPerTable: actual.map((rows) => rows.length),
         rowsVerified: actual.flat().length,
         queued: 0,
@@ -591,10 +676,17 @@ test(
           localLogs: root,
         }),
       );
-      await stopProcess("SIGTERM");
     } finally {
       transportMode = "up";
       releaseHeld?.();
+      if (
+        passiveChild &&
+        passiveChild.exitCode === null &&
+        passiveChild.signalCode === null
+      ) {
+        passiveChild.kill("SIGKILL");
+        await once(passiveChild, "exit");
+      }
       if (child && child.exitCode === null && child.signalCode === null) {
         child.kill("SIGKILL");
         await once(child, "exit");

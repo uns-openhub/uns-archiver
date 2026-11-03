@@ -64,6 +64,67 @@ function fixture(
     clean: () => rmSync(root, { recursive: true, force: true }),
   };
 }
+
+test("healthy live writes may finish after source preflight; final and target checks still require drain", async () => {
+  let finish!: () => void;
+  const held = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const f = fixture({
+    write: async () => {
+      await held;
+    },
+  });
+  const journal = f.open();
+  const accepted = journal.submit([event("test_live_data", 1)]);
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(journal.snapshot().targets[0]?.inFlight, 1);
+    assert.throws(() => journal.exportPolicy(), /not drained/);
+    const state = journal.exportPolicy({ sourcePreflight: true });
+    journal.validatePolicy(state, { sourcePreflight: true });
+    assert.throws(() => journal.validatePolicy(state), /retained writes/);
+    assert.throws(() => journal.importPolicy(state), /retained writes/);
+    finish();
+    await accepted;
+    await journal.close();
+    assert.deepEqual(journal.exportPolicy(), state);
+    journal.validatePolicy(state);
+  } finally {
+    finish();
+    await accepted;
+    await journal.close();
+    f.clean();
+  }
+});
+
+test("source preflight still blocks retries and unstarted retained writes", async () => {
+  const f = fixture({
+    retryMs: 30_000,
+    write: async () => {
+      throw new Error("Database unavailable");
+    },
+  });
+  const journal = f.open();
+  try {
+    await journal.submit([event("test_retry_data", 1)]);
+    assert.throws(
+      () => journal.exportPolicy({ sourcePreflight: true }),
+      /not drained/,
+    );
+    assert.throws(
+      () =>
+        journal.validatePolicy(
+          { protocol: 1, revision: 0, rules: [] },
+          { sourcePreflight: true },
+        ),
+      /retained writes/,
+    );
+  } finally {
+    await journal.close();
+    f.clean();
+  }
+});
 async function drain(journal: TargetJournal<any>, count = 10) {
   for (let n = 0; n < count; n++) {
     await new Promise((resolve) => setTimeout(resolve, 3));
@@ -465,21 +526,104 @@ test("SIGKILL preserves all accepted occurrences and pause policy without a grac
   }
 });
 
-test("generic handover state keeps pauses and refuses to abandon a retained queue", async () => {
+test("a target pause blocks handover even with an empty queue; unrelated writes continue", async () => {
+  const f = fixture();
+  const journal = f.open();
+  try {
+    const command = pause();
+    await journal.command(command, "operator");
+    const before = journal.snapshot().policy;
+    assert.throws(() => journal.exportPolicy(), /Resume all target pauses/);
+    assert.deepEqual(journal.snapshot().policy, before);
+    await journal.submit([event("test_healthy_data", 1)]);
+    assert.equal(f.rows.length, 1);
+    await journal.close();
+    assert.throws(() => journal.exportPolicy(), /Resume all target pauses/);
+  } finally {
+    await journal.close();
+    f.clean();
+  }
+});
+
+test("a pause for an unobserved topic blocks handover and remains blocked after restart", async () => {
+  const f = fixture();
+  let journal = f.open();
+  try {
+    await journal.command(
+      {
+        action: "pause",
+        selector: { topicFilter: "canary/future/#" },
+        expectedRevision: 0,
+        requestId: randomUUID(),
+        reason: "Maintenance",
+      },
+      "operator",
+    );
+    assert.equal(journal.snapshot().targets.length, 0);
+    assert.throws(() => journal.exportPolicy(), /target pause/);
+    await journal.close();
+    journal = f.open();
+    assert.equal(journal.snapshot().policy.rules.length, 1);
+    assert.throws(() => journal.exportPolicy(), /target pause/);
+  } finally {
+    await journal.close();
+    f.clean();
+  }
+});
+
+test("handover refuses incoming or retained pauses without replacing either policy", async () => {
   const source = fixture(),
     target = fixture();
   const a = source.open(),
     b = target.open();
   try {
+    const emptyState = a.exportPolicy();
     await a.command(pause(), "operator");
+    const pausedState = a.snapshot().policy; // An older peer may still offer a paused policy.
+    assert.throws(() => b.validatePolicy(pausedState), /target pause/);
+    assert.throws(() => b.importPolicy(pausedState), /target pause/);
+    assert.deepEqual(b.snapshot().policy, emptyState);
+    await b.command(pause(), "operator");
+    const retained = b.snapshot().policy;
+    assert.throws(() => b.importPolicy(emptyState), /target pause/);
+    assert.deepEqual(b.snapshot().policy, retained);
+    assert.deepEqual(a.snapshot().policy, pausedState);
+  } finally {
+    await a.close();
+    await b.close();
+    source.clean();
+    target.clean();
+  }
+});
+
+test("handover is allowed only after every pause is resumed and retained writes drain", async () => {
+  const source = fixture(),
+    target = fixture();
+  const a = source.open(),
+    b = target.open();
+  try {
+    const first = pause(),
+      second = pause(1, ["test_other_data"]);
+    await a.command(first, "operator");
+    await a.command(second, "operator");
+    await a.submit([event("test_paused_data", 12)]);
+    await a.command(resume(first.requestId, 2), "operator");
+    assert.throws(() => a.exportPolicy(), /target pause/);
+    await a.command(resume(second.requestId, 3), "operator");
+    await drain(a);
+    assert.equal(source.rows.length, 1);
     const state = a.exportPolicy();
     b.importPolicy(state);
-    assert.equal(b.isPaused("test_paused_data"), true);
-    await b.submit([event("test_paused_data", 1)]);
-    assert.throws(() => b.exportPolicy(), /not drained/);
-    assert.throws(() => b.importPolicy(state), /retained writes/);
+    assert.deepEqual(b.exportPolicy(), state);
+    assert.equal(b.isPaused("test_paused_data"), false);
     await a.close();
-    assert.deepEqual(a.exportPolicy(), state); // SDK's final export follows source drain.
+    assert.deepEqual(a.exportPolicy(), state); // SDK final export follows normal drain.
+    a.validatePolicy(state); // The SDK validates the final export after drain too.
+    assert.throws(
+      () => a.validatePolicy({ ...state, revision: state.revision + 1 }),
+      /closed|different/i,
+    );
+    assert.throws(() => a.importPolicy(state), /closed/i);
   } finally {
     await a.close();
     await b.close();
@@ -587,6 +731,37 @@ test("retained large payloads respect the in-flight byte budget while other work
   } finally {
     blocked = false;
     release?.();
+    await journal.close();
+    f.clean();
+  }
+});
+
+test("only active pauses retain the host migration policy file; SQLite keeps unpaused history", async () => {
+  const f = fixture();
+  let journal = f.open();
+  try {
+    const file = path.join(f.root, "policy.json");
+    assert.equal(readdirSync(f.root).includes("policy.json"), false);
+    journal.setGlobalPaused(true);
+    assert.equal(JSON.parse(readFileSync(file, "utf8")).revision, 0);
+    assert.throws(() => journal.exportPolicy(), /paused/);
+    journal.setGlobalPaused(false);
+    assert.equal(readdirSync(f.root).includes("policy.json"), false);
+    const command = pause();
+    await journal.command(command, "operator");
+    assert.equal(JSON.parse(readFileSync(file, "utf8")).rules.length, 1);
+    journal.setGlobalPaused(true);
+    journal.setGlobalPaused(false);
+    assert.equal(JSON.parse(readFileSync(file, "utf8")).rules.length, 1);
+    await journal.command(resume(command.requestId), "operator");
+    assert.equal(readdirSync(f.root).includes("policy.json"), false);
+    const state = journal.exportPolicy();
+    assert.equal(state.revision, 2);
+    await journal.close();
+    journal = f.open();
+    assert.deepEqual(journal.exportPolicy(), state);
+    assert.equal(readdirSync(f.root).includes("policy.json"), false);
+  } finally {
     await journal.close();
     f.clean();
   }

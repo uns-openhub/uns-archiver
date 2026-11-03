@@ -13,6 +13,12 @@ export const drainArchiverForShutdown = async (
   steps: ArchiverShutdownSteps,
 ): Promise<void> => {
   await steps.stopMqtt();
+  await drainAcceptedArchiverWork(steps);
+};
+
+const drainAcceptedArchiverWork = async (
+  steps: Omit<ArchiverShutdownSteps, "stopMqtt">,
+): Promise<void> => {
   await steps.waitForLiveIngest();
   await steps.waitForStoredReplay();
   await steps.closeQuestDb();
@@ -22,19 +28,35 @@ export const drainArchiverForShutdown = async (
 export function createArchiverShutdown(
   releaseAdmission: () => void,
   steps: ArchiverShutdownSteps,
-): { release: () => void; drain: () => Promise<void> } {
+): {
+  release: () => void;
+  drain: () => Promise<void>;
+  drainForHandover: () => Promise<void>;
+} {
   let released = false;
   let draining: Promise<void> | undefined;
+  let acceptedWork: Promise<void> | undefined;
   const release = () => {
     if (released) return;
     released = true;
     releaseAdmission();
   };
+  const drainForHandover = () => {
+    release();
+    acceptedWork ??= drainAcceptedArchiverWork(steps);
+    return acceptedWork;
+  };
   return {
     release,
+    // SDK has already frozen input. Its MQTT control connection must survive
+    // until the exact state is acknowledged by the successor.
+    drainForHandover,
     drain: () => {
       release();
-      draining ??= drainArchiverForShutdown(steps);
+      draining ??= (async () => {
+        await steps.stopMqtt();
+        await drainForHandover();
+      })();
       return draining;
     },
   };
