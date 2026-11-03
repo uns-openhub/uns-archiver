@@ -131,6 +131,7 @@ export class TargetJournal<T> {
   private closing?: Promise<void>;
   private closed = false;
   private closedDrained = false;
+  private globalPaused = false;
   private storageError: string | null = null;
   private timer?: ReturnType<typeof setInterval>;
   private cursor = "";
@@ -300,6 +301,16 @@ export class TargetJournal<T> {
     );
   }
   private mirrorPolicy() {
+    // SQLite is authoritative. An unpaused owner needs no separate file
+    // transferred by the host; the SDK carries its bounded application state.
+    if (!this.globalPaused && this.policy.rules.length === 0) {
+      if (existsSync(this.options.policyFile)) {
+        this.readPortable(); // Never unlink an unsafe/foreign path.
+        unlinkSync(this.options.policyFile);
+        this.syncDirectory(path.dirname(this.options.policyFile));
+      }
+      return;
+    }
     const temporary = `${this.options.policyFile}.${process.pid}.tmp`;
     try {
       writeFileSync(temporary, JSON.stringify(this.policy), {
@@ -316,6 +327,18 @@ export class TargetJournal<T> {
       this.syncDirectory(path.dirname(this.options.policyFile));
     } finally {
       if (existsSync(temporary)) unlinkSync(temporary);
+    }
+  }
+  setGlobalPaused(paused: boolean) {
+    if (this.closed)
+      throw new Error("Closed target journal cannot change pause state");
+    const previous = this.globalPaused;
+    this.globalPaused = paused;
+    try {
+      this.mirrorPolicy();
+    } catch (error) {
+      this.globalPaused = previous;
+      this.fault(error);
     }
   }
   private transaction<R>(work: () => R): R {
@@ -346,36 +369,68 @@ export class TargetJournal<T> {
       .run(JSON.stringify(policy));
     this.policy = policy;
   }
-  exportPolicy() {
+  private retainedWritesBlockPolicy(sourcePreflight = false): boolean {
+    // SDK checks the still-active source before freezing admission. Healthy
+    // writes already in progress may finish in its drain hook. Never admit
+    // retries, queued work or uncertain outcomes through this preliminary check.
+    return (
+      !!this.storageError ||
+      (!sourcePreflight && this.jobs.size > 0) ||
+      !!this.db
+        .prepare(
+          sourcePreflight
+            ? "SELECT 1 FROM queue WHERE state='pending' AND (in_write=0 OR attempts>0) LIMIT 1"
+            : "SELECT 1 FROM queue WHERE state='pending' LIMIT 1",
+        )
+        .get()
+    );
+  }
+  exportPolicy(options: { sourcePreflight?: boolean } = {}) {
+    if (this.globalPaused)
+      throw new Error(
+        "Archiver migration is blocked while archiving is paused. Resume archiving before migration.",
+      );
+    if (this.policy.rules.length)
+      throw new Error(
+        "Archiver migration is blocked by a target pause. Resume all target pauses before migration.",
+      );
     if (this.closed) {
       if (!this.closedDrained || this.storageError)
         throw new Error("Closed target journal retained pending writes");
       return structuredClone(this.policy);
     }
-    if (
-      this.storageError ||
-      this.jobs.size ||
-      this.db.prepare("SELECT 1 FROM queue WHERE state='pending' LIMIT 1").get()
-    )
+    if (this.retainedWritesBlockPolicy(options.sourcePreflight))
       throw new Error(
         "Target journal is not drained; retain this source and its queue before handover",
       );
     return structuredClone(this.policy);
   }
-  validatePolicy(value: unknown) {
+  validatePolicy(value: unknown, options: { sourcePreflight?: boolean } = {}) {
     const policy = policySchema.parse(value);
+    if (this.globalPaused || this.policy.rules.length || policy.rules.length)
+      throw new Error(
+        "Archiver migration is blocked by a target pause. Resume all target pauses before migration.",
+      );
+    if (this.closed) {
+      if (!this.closedDrained || this.storageError)
+        throw new Error("Closed target journal retained pending writes");
+      if (JSON.stringify(policy) !== JSON.stringify(this.policy))
+        throw new Error(
+          "Closed target journal can validate only its own final policy",
+        );
+      return;
+    }
     if (
       JSON.stringify(policy) !== JSON.stringify(this.policy) &&
       this.policy.revision !== 0
     )
       throw new Error("Retained target pause policy differs; review required");
-    if (
-      this.jobs.size ||
-      this.db.prepare("SELECT 1 FROM queue WHERE state='pending' LIMIT 1").get()
-    )
+    if (this.retainedWritesBlockPolicy(options.sourcePreflight))
       throw new Error("Target has retained writes; policy replacement blocked");
   }
   importPolicy(value: unknown) {
+    if (this.closed)
+      throw new Error("Closed target journal cannot import handover state");
     this.validatePolicy(value);
     try {
       this.savePolicy(policySchema.parse(value));

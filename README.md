@@ -445,29 +445,32 @@ vulnerabilities.
 
 [MIT](./LICENSE) © Aljoša Vister.
 
-### Application drain during handover (unreleased candidate)
+### Application drain and migration (5.2.29)
 
-The candidate requires `@uns-kit/core` 3.0.23 and registers its
-`handoverShutdown` hook before starting the input proxy. Once an active source
-accepts a handover, it stops starting new replay writes and subscription updates.
-Already accepted live work continues. After the target acknowledges MQTT
-ownership, the source awaits input proxy shutdown, live ingestion/durable spills,
-current replay and legacy-import checkpoints, then closes the shared QuestDB
-writer. SIGINT/SIGTERM use the same idempotent drain.
+Archiver 5.2.29 uses published UNS Kit 3.0.41. Managed installation requires
+Controller 2.2.61 or later in the 2.x line, whose generic migration preview
+supports optional runtime state and blocks retained migration restrictions.
+For state-preserving handover, configure `uns.handoverProtocol` as
+`correlated-v2` on both placements and use the normal reviewed Controller flow.
+Package capability declarations alone do not prove a ready runtime.
 
-The deadline after acknowledgement is 30 seconds. Failure or timeout exits with
-status 1 and an incomplete-drain diagnostic; successful drain exits with 0.
-Persisted unacknowledged import files remain recoverable and restart requires
-reviewed resume. Timeout can interrupt accepted in-memory live work and cannot
-prove that a database write was cancelled. Delivery is not exactly once.
-Review supervisor restart behavior before rollout: a failed old instance must
-not automatically restart and reclaim ownership while the new one is active.
+The SDK freezes source input before the application drains accepted ingestion,
+durable replay/import work and the QuestDB writer. Its control connection stays
+open until the successor acknowledges the exact final state. One SDK owner also
+controls API activation and route publication, so a passive successor cannot
+accept control writes or advertise an active service route. Global or selective
+pause blocks migration; resume every rule first. SQLite queues are not copied.
 
-This hook is not retroactive: an older source binary still uses its installed
-SDK's exit behavior. MQTT `handover_fin`/`handover_ack` are ownership-transfer
-messages, not application-drain receipts. Confirm actual old-process exit before
-starting legacy import. Real broker/QuestDB/Runtime upgrade acceptance remains
-separate from the candidate's subprocess recovery tests.
+The application drain deadline is 30 seconds. A timeout or missing receipt is
+an unconfirmed operation, never proof of empty queues or a successful transfer.
+Keep both owners, their fences and all pending data for reconciliation. Ordinary
+SIGINT/SIGTERM still use full idempotent cleanup. SDK cooperative Stop additionally
+stops application maintenance timers and exits naturally after confirmed cleanup.
+
+These changes do not repair an older running source retroactively. Upgrade it
+through the existing reviewed lifecycle before relying on the new capability.
+Confirm actual source exit before resuming import from its old spool. Database
+commit acknowledgement loss can still produce append duplicates.
 
 ### Operator import status
 
@@ -758,12 +761,28 @@ must not be bypassed by an unbounded fallback. No local disk policy can guarante
 retention after disk exhaustion, corruption, or delivery that MQTT did not replay.
 
 `archiver-target-policy.json` contains bounded operator state, never payloads or
-connection credentials. The generic `runtime-state.manifest.json` makes this state
-available to Controller's normal runtime-state transfer. SDK application state
-also carries the reviewed policy and rejects a live handover if pending target
-writes remain. Neither contract copies the SQLite queue to another host: drain it
-first or retain/review the source queue separately. A restart retains both policy
-and queue. Do not delete either file to clear a pause. Backup tools must use a
+connection credentials. The generic `runtime-state.manifest.json` declares this
+optional file; the canonical policy, revision and command receipts remain in
+SQLite. **Since 5.2.29:** the derived file exists while a global
+or selective pause blocks migration and is removed automatically after every
+pause is resumed. Operators must not delete it to bypass a pause. An unpaused
+policy revision moves through the existing SDK application-state contract.
+
+A global archiving pause or any target-pause rule blocks migration, including
+an empty queue or a rule for a topic not observed yet. A retained pause at the
+destination or an older peer's incoming paused policy is also rejected. Resume
+all pauses and let retained writes finish before migration. The source checks
+this application-owned condition before giving up ownership and validates its
+final drained state again. Healthy live writes already in progress may finish
+inside that drain; retries and the older file queue must be cleared first.
+Ordinary stop/start preserves the selective policy and queued data. The legacy
+global pause remains process-local and resets on restart as before.
+
+The [local acceptance](docs/pause-migration-acceptance.md) records an
+accompanying generic Controller correction: matching optional file descriptors
+with absent snapshots may use SDK handover; any retained file blocks this path,
+including a cold-mode request. This capability requires Controller 2.2.61+. Neither contract copies a SQLite queue to another host: drain it
+first or retain/review the source queue separately. Backup tools must use a
 consistent SQLite snapshot or a stopped writer, including any WAL; copying only
 the live main database file is unsafe. Spool-excluding backups omit this queue too.
 
@@ -786,7 +805,8 @@ ARCHIVER_TEST_QUESTDB=http://127.0.0.1:19000 ARCHIVER_TEST_MQTT=mqtt://127.0.0.1
 ```
 
 The process test uses real MQTT, the built `dist/index.js`, SDK JWKS verification,
-registered service endpoint discovery, a lost HTTP response, and a process restart.
+registered service endpoint discovery, a lost HTTP response, a process restart,
+and launch-bound cooperative Stop without a forced signal.
 Its authenticated GraphQL discovery service is a scoped fixture, not a full
 Controller-managed installation or Controller proxy test. Setting
 `ARCHIVER_TEST_QDB_CONTAINER` to an owned disposable container named

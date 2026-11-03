@@ -120,3 +120,48 @@ test("failed replay drain is shared with signal cleanup and never closes its pen
   assert.equal(closes, 0);
   assert.equal(releases, 1);
 });
+
+test("SDK handover drains accepted work without closing the control connection; final stop closes it once", async () => {
+  let connectionOpen = true;
+  const accepted = deferred();
+  const calls: string[] = [];
+  const lifecycle = createArchiverShutdown(() => calls.push("release"), {
+    stopMqtt: async () => {
+      calls.push("mqtt-close");
+      connectionOpen = false;
+    },
+    waitForLiveIngest: async () => {
+      calls.push("live");
+      await accepted.promise;
+    },
+    waitForStoredReplay: async () => {
+      calls.push("replay");
+    },
+    closeQuestDb: async () => {
+      calls.push("writer-close");
+    },
+  });
+  const first = lifecycle.drainForHandover();
+  assert.equal(lifecycle.drainForHandover(), first);
+  assert.equal(connectionOpen, true);
+  assert.deepEqual(calls, ["release", "live"]);
+  accepted.resolve();
+  await first;
+  assert.equal(
+    connectionOpen,
+    true,
+    "SDK still needs to send state and receive the successor acknowledgement",
+  );
+  assert.deepEqual(calls, ["release", "live", "replay", "writer-close"]);
+  const stop = lifecycle.drain();
+  assert.equal(lifecycle.drain(), stop);
+  await stop;
+  assert.equal(connectionOpen, false);
+  assert.deepEqual(calls, [
+    "release",
+    "live",
+    "replay",
+    "writer-close",
+    "mqtt-close",
+  ]);
+});
