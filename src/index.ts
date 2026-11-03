@@ -1,5 +1,5 @@
 import { occurrenceId, persistEventFile } from "./durable-event-file.js";
-import { targetControlApi, targetCommandOpenApiSchema } from "./target-control-api.js";
+import { targetControlApi, targetCommandOpenApiSchema, targetStatusOperatorOperations, targetControlOperatorOperations } from "./target-control-api.js";
 import { assertStoredQueueDrainedForHandover, createArchiverHandoverState } from "./archiver-handover-state.js";
 import { TargetStorageError } from "./target-journal.js";
 import { archiveInputReadiness } from "./archive-input-readiness.js";
@@ -29,6 +29,7 @@ import { buildServiceApiInteractions, type UnsProxyProcessWithApi } from "@uns-k
 
 import { ActiveUnsTopics, UnsTopicMetadata } from "./active-uns-topics.js";
 import { TopicMatcher } from "./topic-matcher.js";
+import { ArchiveTopicAdmission, archiveTopicExclusionsSchema } from "./archive-topic-admission.js";
 import { UnsPacket } from "@uns-kit/core/uns/uns-packet.js";
 
 import { QuestDBWriter, type QuestDbDependencyHealth } from "./writers/questDbWriter.js";
@@ -84,7 +85,7 @@ const EVENT_FILE_EXTENSION = ".event";
 const EVENT_PROCESSING_EXTENSION = ".processing";
 const FAILED_EVENT_STORAGE_DIR = path.join(EVENT_STORAGE_DIR, "failed");
 const TOPICS_REFRESH_INTERVAL = 30000; // 30 seconds
-const CONFIG_REFRESH_INTERVAL = 45000; // 30 seconds
+const CONFIG_REFRESH_INTERVAL = 45000; // 45 seconds
 const MAPPING_PUBLISH_INTERVAL = 60000; // 1 minute
 const PROCESSED_EVENTS_CACHE_SIZE = 10000; // Adjust as needed
 const API_HEALTHCHECK_INTERVAL = 60000; // 1 minute
@@ -208,6 +209,7 @@ let serviceMetadataPublisher: UnsProxyProcessWithApi | undefined;
 let activeTopics: string[] = [];
 let topicMetadata: Record<string, UnsTopicMetadata> = {};
 let subscribedTopicFilters: string[] = [];
+const archiveTopicAdmission = new ArchiveTopicAdmission();
 let activeTopicsRefreshPromise: Promise<void> | null = null;
 
 const metadataRefresh = metadataRefreshScheduler(async () => {
@@ -305,6 +307,7 @@ const resolvePositiveInteger = (value: unknown, fallback: number): number =>
 
 const refreshArchiverRuntimeSettings = () => {
   const cfg: ArchiverRuntimeConfig | undefined = (config as any)?.archiver;
+  archiveTopicAdmission.update((config.questdb as typeof config.questdb & { excludeTopics?: string[] }).excludeTopics);
   traceIngestEnabled = cfg?.traceIngest ?? resolveTraceIngestFromEnv();
   inactiveBufferMaxEvents =
     typeof cfg?.inactiveBufferMax === "number"
@@ -908,6 +911,8 @@ async function reloadConfig(): Promise<{ dataStorageChanged: boolean; identitySu
   const previousIdentityEnrichmentEnabled = identityEnrichmentEnabled;
   ConfigFile.clearCache();
   const updated = await ConfigFile.loadConfig();
+  // Invalid edits must not replace the last usable input policy/config.
+  archiveTopicExclusionsSchema.parse((updated.questdb as typeof updated.questdb & { excludeTopics?: unknown }).excludeTopics ?? []);
   config = updated;
   refreshArchiverRuntimeSettings();
   refreshIdentityBindingClient();
@@ -1196,9 +1201,10 @@ async function setupApiProxy() {
         requestBody: { required: true, description: "Legacy import command", schema: importCommandSchema } });
 
     await apiProxy.get(CONTROL_TOPIC, CONTROL_ASSET, CONTROL_OBJECT_TYPE, CONTROL_OBJECT_ID,
-      "targets", serviceApiInteractions.targets.options);
+      "targets", { ...serviceApiInteractions.targets.options, operatorOperations: targetStatusOperatorOperations });
     await apiProxy.post(CONTROL_TOPIC, CONTROL_ASSET, CONTROL_OBJECT_TYPE, CONTROL_OBJECT_ID,
       "target-control", { ...serviceApiInteractions.targetControl.options,
+        operatorOperations: targetControlOperatorOperations,
         requestBody: { required: true, description: "Preview or revision-checked target pause/resume command", schema: targetCommandOpenApiSchema } });
     apiProxy.event.on("apiGetEvent", handleApiGetEvent);
     apiProxy.event.on("apiPostEvent", handleImportPostEvent);
@@ -1264,6 +1270,7 @@ async function handleApiGetEvent(event: any) {
       event.res.json({
         activeTopics,
         topicMetadataCount: Object.keys(topicMetadata ?? {}).length,
+        topicAdmission: archiveTopicAdmission.snapshot(),
         ...queueStatus,
         targetJournal: targetJournal.snapshot(),
         storedReplay: storedReplay.diagnostics(),
@@ -1371,6 +1378,7 @@ async function subscribeToTopics(topics: string[]) {
           handleEntityBindingInvalidation(mqttEvent?.message);
           return;
         }
+        if (!archiveTopicAdmission.accepts(String(mqttEvent.topic ?? ""))) return;
         const eventId = generateEventId(mqttEvent);
         ingestQueue!.enqueue({
           id: eventId,

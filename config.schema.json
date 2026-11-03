@@ -2484,6 +2484,17 @@
                 }
               }
             },
+            "excludeTopics": {
+              "description": "MQTT topic exclusions for NEW incoming events only (for example example/maintenance/#). Takes precedence over every dataStorage include. An empty list excludes nothing. Reloaded with normal config refresh. Accepted queues, journal/legacy replay and existing database rows remain unchanged; use target pause to stop pending writes.",
+              "maxItems": 128,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 65535,
+                "pattern": "^(?![!])(?:[^+#\\0/]*|\\+)(?:\\/(?:[^+#\\0/]*|\\+))*(?:\\/#)?$|^#$"
+              }
+            },
             "dataStorage": {
               "minItems": 1,
               "type": "array",

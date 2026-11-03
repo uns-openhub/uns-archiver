@@ -9,6 +9,8 @@ import { TargetJournal } from "../src/target-journal.js";
 import {
   targetControlApi,
   targetCommandOpenApiSchema,
+  targetStatusOperatorOperations,
+  targetControlOperatorOperations,
 } from "../src/target-control-api.js";
 
 test("real SDK HTTP authentication: anonymous/forged/reader/path denial and operator lost-response retry", async () => {
@@ -22,6 +24,7 @@ test("real SDK HTTP authentication: anonymous/forged/reader/path denial and oper
   });
   const proxy = new UnsApiProxy("archiver-test", "target-http", {
     jwtSecret: secret,
+    operatorAuthorizationStatusUrl: "",
   });
   let activeOwner = true;
   const api = targetControlApi(journal, () => activeOwner);
@@ -44,14 +47,14 @@ test("real SDK HTTP authentication: anonymous/forged/reader/path denial and oper
     proxy.event.on("apiPostEvent", (event) => {
       void api.post(event);
     });
-    await proxy.get("canary", "archiver", "service", "local", "targets");
+    await proxy.get("canary", "archiver", "service", "local", "targets", { operatorOperations: targetStatusOperatorOperations });
     await proxy.post(
       "canary",
       "archiver",
       "service",
       "local",
       "target-control",
-      { requestBody: { required: true, schema: targetCommandOpenApiSchema } },
+      { requestBody: { required: true, schema: targetCommandOpenApiSchema }, operatorOperations: targetControlOperatorOperations },
     );
     const base = `http://127.0.0.1:${(proxy as any).app.server.address().port}/api/canary/archiver/service/local`;
     const call = (token?: string, body?: unknown) =>

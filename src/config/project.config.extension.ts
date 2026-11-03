@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { archiveTopicExclusionsSchema } from "../archive-topic-admission.js";
 import {
   secretPlaceholderSchema,
   secretValueSchema,
@@ -207,6 +208,9 @@ export const projectExtrasSchema = z.object({
           }
         })
         .describe("Bounded shared QuestDB ILP batching settings."),
+      excludeTopics: archiveTopicExclusionsSchema.optional().describe(
+        "MQTT topic exclusions for NEW incoming events only (for example example/maintenance/#). Takes precedence over every dataStorage include. An empty list excludes nothing. Reloaded with normal config refresh. Accepted queues, journal/legacy replay and existing database rows remain unchanged; use target pause to stop pending writes.",
+      ),
       dataStorage: z
         .array(
           z.object({

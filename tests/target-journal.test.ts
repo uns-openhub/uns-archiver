@@ -439,6 +439,7 @@ test("operator API rejects readers and stale commands; preview makes no changes"
       body,
     };
     const res: any = {
+      setHeader: () => {},
       status: (value: number) => {
         status = value;
         return res;

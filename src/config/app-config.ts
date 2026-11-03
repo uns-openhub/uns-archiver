@@ -306,6 +306,8 @@ export interface ProjectAppConfig {
             /** Maximum accepted ILP rows across the queued and flushing shared sender batch (default 2048). A full queue rejects new writes so the archiver can persist them to event storage. */
             maxPendingRows?: number | undefined;
         } | undefined;
+        /** MQTT topic exclusions for NEW incoming events only (for example example/maintenance/#). Takes precedence over every dataStorage include. An empty list excludes nothing. Reloaded with normal config refresh. Accepted queues, journal/legacy replay and existing database rows remain unchanged; use target pause to stop pending writes. */
+        excludeTopics?: string[] | undefined;
         dataStorage: {
             /** Prefix used when naming QuestDB tables for this topic */
             tablePrefix: string;
