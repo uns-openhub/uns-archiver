@@ -23,11 +23,11 @@ importers:
         specifier: ^4.2.0
         version: 4.2.0
       '@uns-kit/api':
-        specifier: 3.0.42
-        version: 3.0.42(typescript@6.0.3)
+        specifier: 3.0.43
+        version: 3.0.43(typescript@6.0.3)
       '@uns-kit/core':
-        specifier: 3.0.42
-        version: 3.0.42(typescript@6.0.3)
+        specifier: 3.0.43
+        version: 3.0.43(typescript@6.0.3)
       dotenv:
         specifier: ^17.4.2
         version: 17.4.2
@@ -1085,11 +1085,11 @@ packages:
   '@types/ws@8.18.1':
     resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
 
-  '@uns-kit/api@3.0.42':
-    resolution: {integrity: sha512-HK0fA9JgDmd9kbVixHOuhOiUxFUmQvl5oVSxJZWsxmdqDwaFXRstqoTf//AELMA+TIJA7T3QtW0sLieOqJQL+A==}
+  '@uns-kit/api@3.0.43':
+    resolution: {integrity: sha512-moHrh8KDoVfG6jf2HRoLRfcg0sP2BoIoJnafpH1a5XfZPOrofzfIRKl3DRpwiMU27SkwktavyMnOxbSsrHJeDg==}
 
-  '@uns-kit/core@3.0.42':
-    resolution: {integrity: sha512-LI/ezIETf6ARnn6xg20d+H40HCn8qVvdzeQ26pCQqCk/8rb5C1JBtnBPUiXCEQEPkk25Q7Nk92cv530UIstDrQ==}
+  '@uns-kit/core@3.0.43':
+    resolution: {integrity: sha512-6FywZDsFKA/ObKtwLthn6ye9JW8375D3WHPdGQwvYZgn709sonLeOqHwrFl7ahLBDZLNc+KoAv3M2h/BFPYPqg==}
 
   '@whatwg-node/disposablestack@0.0.6':
     resolution: {integrity: sha512-LOtTn+JgJvX8WfBVJtF08TGrdjuFzGJc4mkP8EdDI8ADbvO7kiexYep1o8dwnt0okb0jYclCDXF13xU7Ge4zSw==}
@@ -3836,9 +3836,9 @@ snapshots:
     dependencies:
       '@types/node': 26.2.0
 
-  '@uns-kit/api@3.0.42(typescript@6.0.3)':
+  '@uns-kit/api@3.0.43(typescript@6.0.3)':
     dependencies:
-      '@uns-kit/core': 3.0.42(typescript@6.0.3)
+      '@uns-kit/core': 3.0.43(typescript@6.0.3)
       cookie-parser: 1.4.7
       express: 5.2.1
       hyparquet-writer: 0.16.6
@@ -3851,7 +3851,7 @@ snapshots:
       - typescript
       - utf-8-validate
 
-  '@uns-kit/core@3.0.42(typescript@6.0.3)':
+  '@uns-kit/core@3.0.43(typescript@6.0.3)':
     dependencies:
       '@grpc/grpc-js': 1.14.4
       '@grpc/proto-loader': 0.8.1
