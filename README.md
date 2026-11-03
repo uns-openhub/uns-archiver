@@ -852,9 +852,9 @@ Before production activation, measure ingress and free disk space, review queue
 capacity and the unlock procedure, publish a reviewed release, and explicitly
 approve deployment. Publishing this release does not activate a production pause.
 
-## Registered operator operations (local candidate)
+## Registered operator operations
 
-The Archiver opts its existing target-control endpoints into the shared SDK
+Since 5.2.30, the Archiver opts its existing target-control endpoints into the shared SDK
 operator contract: `targets.status`, `targets.preview`, `targets.pause`, and
 `targets.resume`. After the corresponding SDK/Controller/application releases,
 Controller MCP clients can discover/read/review/confirm these operations without
@@ -863,5 +863,16 @@ revision checks, durable receipts, pause boundaries and queue retention remain
 unchanged. Old MCP tokens gain no grant automatically; execution requires an
 explicitly granted write tool and exact reviewed payload.
 
-This is currently source/local acceptance, not a deployed production control.
-See [operator and exclusion acceptance](docs/operator-api-acceptance.md).
+Prepared 5.2.31 adopts SDK 3.0.43, whose API publisher registers the route for the
+actual managed launch automatically. It requires the corresponding generic host
+bootstrap in Controller 2.2.66 for normal managed operator discovery. Updating
+only the Controller cannot add launch metadata to an already running Archiver;
+use the application's ordinary guarded upgrade/Start after the host update.
+Retain the reviewed service identity and `read:uns` scope; adding operator scopes
+to that identity does not repair a missing route receipt. Operator workload
+grants remain a separate caller policy. Ordinary archiving and standalone/native
+operator access retain their existing compatibility boundary.
+
+See [operator and exclusion acceptance](docs/operator-api-acceptance.md) and
+[the prepared managed-route release](docs/release-5.2.31.md). Source publication,
+registry installation and production availability must be verified separately.
