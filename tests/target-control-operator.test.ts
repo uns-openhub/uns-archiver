@@ -19,7 +19,7 @@ import {
   targetStatusOperatorOperations,
 } from "../src/target-control-api.js";
 
-test("scoped SDK operator authority pauses one target, preserves both tables through an outage, and resumes the durable journal", async () => {
+test("scoped SDK operator authority recovers JWKS, preserves paused work during denied reads and resumes the durable journal", async () => {
   const root = mkdtempSync(path.join(tmpdir(), "archiver-operator-"));
   const key = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const kid = "synthetic-operator";
@@ -33,6 +33,7 @@ test("scoped SDK operator authority pauses one target, preserves both tables thr
   let active = true,
     unavailable = false,
     databaseDown = false;
+  let jwksReads = 0;
   const rows: JournalEntry<{ value: number }>[] = [];
   const config = {
     directory: path.join(root, "journal"),
@@ -67,6 +68,11 @@ test("scoped SDK operator authority pauses one target, preserves both tables thr
   const authority = createServer((req, res) => {
     res.setHeader("content-type", "application/json");
     if (req.url === "/operator-jwks") {
+      jwksReads++;
+      if (jwksReads === 1) {
+        res.writeHead(503).end("{}");
+        return;
+      }
       res.end(JSON.stringify({ keys: [publicJwk] }));
       return;
     }
@@ -186,6 +192,7 @@ test("scoped SDK operator authority pauses one target, preserves both tables thr
       ).status,
       200,
     );
+    assert.equal(jwksReads, 2);
     assert.equal(journal.snapshot().policy.revision, 0);
     // Discard one successful reply, then repeat the exact application request ID.
     assert.equal((await call("targets.pause", command)).status, 200);
@@ -224,6 +231,24 @@ test("scoped SDK operator authority pauses one target, preserves both tables thr
       journal
         .snapshot()
         .targets.reduce((n, target) => n + Number(target.queued), 0),
+      3,
+    );
+    active = false;
+    assert.equal((await call("targets.status", {})).status, 403);
+    active = true;
+    unavailable = true;
+    assert.equal((await call("targets.status", {})).status, 503);
+    unavailable = false;
+    const recovered = await call("targets.status", {});
+    assert.equal(recovered.status, 200);
+    const unchanged = (await recovered.json()) as any;
+    assert.equal(unchanged.policy.revision, 1);
+    assert.equal(unchanged.boundary.phase, "paused");
+    assert.equal(
+      unchanged.targets.reduce(
+        (n: number, target: any) => n + Number(target.queued),
+        0,
+      ),
       3,
     );
     assert.equal((await call("targets.pause", command)).status, 200);
