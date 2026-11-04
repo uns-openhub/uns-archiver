@@ -791,6 +791,14 @@ A disk/quota failure fails acceptance and reports degraded storage health. It
 must not be bypassed by an unbounded fallback. No local disk policy can guarantee
 retention after disk exhaustion, corruption, or delivery that MQTT did not replay.
 
+Since 5.2.32, receipt maintenance uses an index containing only confirmed live
+receipt IDs. It retains the newest 10,000 live receipts without scanning the
+pending payload backlog after a long pause. Pending/retrying rows and legacy
+source receipts retain their existing lifecycle. An existing version-1 journal
+gains this additive index on open; SQLite FULL durability, queue budgets and
+replay batch limits are unchanged. This reduces maintenance work, not a promise
+of a fixed end-to-end replay rate.
+
 `archiver-target-policy.json` contains bounded operator state, never payloads or
 connection credentials. The generic `runtime-state.manifest.json` declares this
 optional file; the canonical policy, revision and command receipts remain in
@@ -876,3 +884,9 @@ operator access retain their existing compatibility boundary.
 See [operator and exclusion acceptance](docs/operator-api-acceptance.md) and
 [the prepared managed-route release](docs/release-5.2.31.md). Source publication,
 registry installation and production availability must be verified separately.
+
+Version 5.2.32 adopts published UNS Kit 3.0.44 for bounded recovery from transient
+operator JWKS transport failures. A persistent key-service outage remains
+unavailable, and revoked or insufficient caller authority remains denied.
+Only the JWKS lookup can be retried; application operations are not replayed.
+See [the release scope and verification](docs/release-5.2.32.md).

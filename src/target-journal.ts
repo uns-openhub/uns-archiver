@@ -218,6 +218,8 @@ export class TargetJournal<T> {
         CREATE INDEX IF NOT EXISTS queue_target ON queue(target, state, seq);
         CREATE INDEX IF NOT EXISTS queue_target_oldest ON queue(target, state, created);
         CREATE INDEX IF NOT EXISTS queue_legacy ON queue(legacy_key);
+        CREATE INDEX IF NOT EXISTS queue_confirmed_live ON queue(seq DESC)
+          WHERE state='confirmed' AND legacy_key IS NULL;
         CREATE TABLE IF NOT EXISTS totals (target TEXT PRIMARY KEY, pending INTEGER NOT NULL DEFAULT 0,
           bytes INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0, last_failure INTEGER,
           retrying INTEGER NOT NULL DEFAULT 0);
@@ -925,10 +927,14 @@ export class TargetJournal<T> {
       }),
     );
     // Keep live receipts bounded without expiring legacy acknowledgements.
+    // The receipt-only index avoids reading every retained payload after a
+    // long pause. Select primary keys first: the legacy-key index otherwise
+    // makes SQLite scan the pending backlog to test its confirmation state.
     this.db
       .prepare(
-        `DELETE FROM queue WHERE state='confirmed' AND legacy_key IS NULL AND seq NOT IN
-      (SELECT seq FROM queue WHERE state='confirmed' AND legacy_key IS NULL ORDER BY seq DESC LIMIT 10000)`,
+        `DELETE FROM queue WHERE seq IN
+      (SELECT seq FROM queue INDEXED BY queue_confirmed_live
+       WHERE state='confirmed' AND legacy_key IS NULL ORDER BY seq DESC LIMIT -1 OFFSET 10000)`,
       )
       .run();
     this.db.exec("PRAGMA wal_checkpoint(PASSIVE)");

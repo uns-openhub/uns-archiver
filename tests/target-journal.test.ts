@@ -14,6 +14,7 @@ import { targetControlApi } from "../src/target-control-api.js";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 
 const pause = (revision = 0, tables = ["test_paused_data"]) => ({
   action: "pause",
@@ -187,6 +188,121 @@ test("one table remains paused while database outage spools ALL other tables; re
         .snapshot()
         .targets.reduce((n, target) => n + Number(target.queued), 0),
       0,
+    );
+  } finally {
+    await journal.close();
+    f.clean();
+  }
+});
+
+test("receipt maintenance upgrades an existing journal without touching pending or legacy rows", async () => {
+  const written: string[] = [];
+  const f = fixture({
+    retryMs: 30_000,
+    write: async (entry) => {
+      if (entry.table === "test_retry_data")
+        throw new Error("Table unavailable");
+      written.push(entry.id);
+    },
+  });
+  let journal = f.open();
+  const paused = Array.from({ length: 5 }, (_, n) =>
+    event("test_paused_data", n, `paused-${n}`),
+  );
+  const retry = event("test_retry_data", 9, "retained-retry");
+  const legacy = {
+    ...event("test_receipts_data", 7, "retained-legacy"),
+    legacyKey: "retained-source-envelope",
+  };
+  try {
+    const command = pause();
+    await journal.command(command, "operator");
+    await journal.submit(paused);
+    await journal.submit([retry]);
+    await journal.submit([legacy]);
+    await journal.close();
+
+    // A previously issued v1 journal has no receipt-only index. Populate a
+    // retained receipt window in one local fixture transaction rather than
+    // turning this regression into thousands of database writes.
+    const file = path.join(f.config.directory, "queue.sqlite");
+    const seed = new DatabaseSync(file);
+    try {
+      seed.exec("DROP INDEX IF EXISTS queue_confirmed_live; BEGIN IMMEDIATE");
+      const insert = seed.prepare(
+        "INSERT INTO queue(id,target,topic,payload,state,bytes,created) VALUES (?,?,?,'','confirmed',0,?)",
+      );
+      for (let n = 0; n < 10_005; n++) {
+        insert.run(
+          `receipt-${n}`,
+          "test_receipts_data",
+          "canary/targets/value",
+          n,
+        );
+      }
+      seed.exec("COMMIT");
+    } finally {
+      seed.close();
+    }
+
+    journal = f.open();
+    await journal.replay();
+    const retained = new DatabaseSync(file, { readOnly: true });
+    try {
+      assert.equal(
+        retained.prepare("PRAGMA user_version").get()?.user_version,
+        1,
+      );
+      assert.deepEqual(
+        retained
+          .prepare(
+            "SELECT id,payload FROM queue WHERE state='pending' ORDER BY seq",
+          )
+          .all()
+          .map((row) => ({
+            id: String(row.id),
+            value: JSON.parse(String(row.payload)).value,
+          })),
+        [...paused, retry].map((row) => ({
+          id: row.id,
+          value: row.payload.value,
+        })),
+      );
+      const receipts = retained
+        .prepare(
+          "SELECT id FROM queue WHERE state='confirmed' AND legacy_key IS NULL ORDER BY seq",
+        )
+        .all();
+      assert.equal(receipts.length, 10_000);
+      assert.equal(receipts[0].id, "receipt-5");
+      assert.equal(receipts.at(-1)?.id, "receipt-10004");
+      assert.equal(
+        retained
+          .prepare("SELECT id FROM queue WHERE legacy_key=?")
+          .get(legacy.legacyKey)?.id,
+        legacy.id,
+      );
+    } finally {
+      retained.close();
+    }
+    assert.equal(journal.snapshot().policy.revision, 1);
+    assert.equal(journal.isPaused("test_paused_data"), true);
+    assert.equal(await journal.submit([legacy]), true);
+    assert.equal(
+      await journal.submit([event("test_receipts_data", 0, "receipt-10004")]),
+      true,
+    );
+    assert.deepEqual(written, [legacy.id]);
+
+    await journal.close();
+    journal = f.open();
+    await journal.command(resume(command.requestId), "operator");
+    await journal.replay();
+    assert.deepEqual(written, [legacy.id, ...paused.map((row) => row.id)]);
+    assert.equal(
+      journal.snapshot().targets.find((row) => row.table === "test_retry_data")
+        ?.queued,
+      1,
     );
   } finally {
     await journal.close();
