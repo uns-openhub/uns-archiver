@@ -1,3 +1,8 @@
+import { existsSync } from "node:fs";
+import { HistoricalImport } from "./historical-import.js";
+import { historicalImportApi, historicalImportOpenApiSchema, historicalImportOperations, historicalImportStatusOperations } from "./historical-import-api.js";
+import { historicalPrefixesOverlap, ImportError, type HistoricalImportSettings, type ImportMapping, type ImportProfile } from "./historical-import-source.js";
+import { deriveQuestDbTopicIdentity } from "./writers/questdb-identity.js";
 import {realpathSync as realpathSyncForStore} from "node:fs";
 import {openRetainedStoreLease, readRetainedStoreManifest, readRetainedStoreJson, resolveRetainedStoreResources} from "@uns-kit/core/runtime/retained-store.js";
 import {fileURLToPath} from "node:url";
@@ -192,7 +197,6 @@ let inputSubscriptionsConfirmed: boolean | null = null;
 let inputObservationAt: number | null = null;
 let lastPublishedInputPhase: string | null = null;
 let inputReadinessPublishInFlight = false;
-let lastMappingHash: string | null = null;
 let mappingPublishPromise: Promise<void> | undefined;
 let mappingPublishRequested = false;
 let apiProxy: any | undefined;
@@ -233,6 +237,7 @@ const mqttPublishCircuit = new CircuitBreaker("mqtt-mapping-publish", {
 type ArchiverRuntimeConfig = {
   legacySources?: LegacySource[];
   legacyImport?: LegacyImportSettings;
+  historicalImport?: HistoricalImportSettings;
   inactiveBufferMax?: number;
   inactiveBufferMaxAgeMs?: number;
   ingestQueueMaxEvents?: number;
@@ -420,6 +425,7 @@ const questDbWriter = new QuestDBWriter(
 let fallbackStorageError: string | null = null;
 let lastDurableFileAt = 0;
 let replayControl: ReplayControl | undefined;
+let historicalImports: HistoricalImport | undefined;
 const targetJournal = questDbWriter.configureTargetJournal({
   directory: path.join(EVENT_STORAGE_DIR, "targets"),
   policyFile: retainedStore.resources["target-policy"]!,
@@ -431,7 +437,8 @@ const targetJournal = questDbWriter.configureTargetJournal({
 replayControl = new ReplayControl(retainedStore.resources.replay!, () =>
   targetJournal.snapshot().targets.reduce((n, t) => n + t.inFlight, 0)
   + storedReplay.diagnostics().inFlight + (storedReplay.diagnostics().active ? 1 : 0)
-  + legacyImports.status().reduce((n, source) => n + (source.job?.inFlight ?? 0), 0));
+  + legacyImports.status().reduce((n, source) => n + (source.job?.inFlight ?? 0), 0)
+  + (historicalImports?.activeWork ?? 0));
 if (retainedStore.binding) replayControl.ensureMaintenancePause(retainedStore.binding.operationId);
 const replayApi = replayControlApi(replayControl, () => !shuttingDown && inputProcess?.isActive() === true, () => retainedStore.binding ? {storeId:retainedStore.binding.storeId,generation:retainedStore.binding.generation,operationId:retainedStore.binding.operationId,format:retainedStore.binding.format} : null);
 const targetApi = targetControlApi(targetJournal, () => !shuttingDown && inputProcess?.isActive() === true);
@@ -521,6 +528,68 @@ const legacyImports = new LegacyImportManager({
   write: writeLegacyPacket,
   acknowledged: key => targetJournal.acknowledgeLegacy(key),
 });
+const historicalImportFile = path.join(EVENT_STORAGE_DIR, "historical-import.sqlite");
+const historicalSettings = legacyRuntimeSettings?.historicalImport;
+for (const profile of historicalSettings?.profiles ?? []) {
+  if (config.questdb.dataStorage.some(storage => historicalPrefixesOverlap(storage.tablePrefix, profile.targetPrefix)))
+    throw new Error("Historical import targets must be separate from live archive storage");
+}
+if (historicalSettings || existsSync(historicalImportFile)) {
+  historicalImports = new HistoricalImport(historicalSettings, {
+    directoryFile: historicalImportFile,
+    resolveTarget: historicalImportTarget,
+    readTarget: sql => questDbWriter.readHistoricalTarget(sql),
+    canWrite: () => !shuttingDown && !ingestionPaused && replayControl?.paused !== true
+      && inputProcess?.isActive() === true && activeTopicsAuthoritative && latestQuestDbHealth?.healthy === true
+      && hasStoredReplayLiveHeadroom(ingestQueue?.snapshot(), ingestQueueMaxEvents, ingestQueueMaxBytes),
+    write: async (mapping, target, record, row) => {
+      const current = historicalImportTarget(mapping, { targetPrefix: target.prefix });
+      if (current.identity !== target.identity || current.table !== target.table)
+        throw new ImportError(409, "historical-contract-changed");
+      const meta = topicMetadata[mapping.topic] ?? topicMetadata[sanitizeTopicName(mapping.topic)];
+      const identity = await resolveEntityIdentityForWrite({ topic: mapping.topic, message: record.packet }, mapping.topic, record.packet);
+      if (identity.retry) throw new ImportError(503, "historical-identity-retry");
+      await questDbWriter.writeUnsPacket(record.packet, target.prefix, mapping.topic, meta,
+        undefined, identity.evidence ?? undefined, {
+          occurrenceId: record.eventId, legacyKey: record.eventId,
+          maxBatchWaitMs: 25, eventTimeMicros: row.cursor.time,
+        });
+    },
+    acknowledge: id => targetJournal.acknowledgeLegacy(id),
+    onSourcesChanged: () => { void publishQuestDbMapping(); },
+  });
+}
+const historyApi = historicalImports ? historicalImportApi(historicalImports) : undefined;
+historicalImports?.kick();
+
+function historicalImportTarget(mapping: ImportMapping, profile: Pick<ImportProfile, "targetPrefix">) {
+  if (!activeTopicsAuthoritative || !activeTopicSet.has(mapping.topic)) {
+    throw new ImportError(503, "historical-target-topic-not-confirmed");
+  }
+  const storage = TopicMatcher.findStorage(config, mapping.topic);
+  if (!storage) throw new ImportError(409, "historical-target-storage-missing");
+  const suffix = mapping.kind === "data" ? "_data" : "_table";
+  const meta = topicMetadata[mapping.topic] ?? topicMetadata[sanitizeTopicName(mapping.topic)];
+  const registeredGroup = meta?.dataGroup;
+  if ((registeredGroup === undefined || registeredGroup !== mapping.dataGroup)
+      && !getObservedDataGroups(mapping.topic, suffix).includes(mapping.dataGroup ?? null)) {
+    throw new ImportError(503, "historical-target-group-not-confirmed");
+  }
+  return {
+    topic: mapping.topic, prefix: profile.targetPrefix, kind: mapping.kind,
+    table: buildQuestDbTableName(profile.targetPrefix, mapping.dataGroup, suffix),
+    identity: historicalTargetIdentity(mapping.topic, meta),
+  };
+}
+
+function historicalTargetIdentity(topic: string, meta = topicMetadata[topic] ?? topicMetadata[sanitizeTopicName(topic)]) {
+  return createHash("sha256").update(JSON.stringify([
+    resolveQuestDbPublicConfigurationString(config.questdb),
+    deriveQuestDbTopicIdentity(topic, meta),
+    identityEnrichmentEnabled,
+  ])).digest("hex");
+}
+
 const archiverShutdown = createArchiverShutdown(
   () => {
     shuttingDown = true;
@@ -551,7 +620,7 @@ const archiverShutdown = createArchiverShutdown(
       await ingestQueue.waitForIdle();
     },
     waitForStoredReplay: async () => {
-      await Promise.all([storedReplay.close(), legacyImports.close()]);
+      await Promise.all([storedReplay.close(), legacyImports.close(), historicalImports?.close()]);
       await targetJournal.close();
     },
     closeQuestDb: async () => {
@@ -979,9 +1048,10 @@ function publishQuestDbMapping(): Promise<void> {
   return mappingPublishPromise;
 }
 async function publishQuestDbMappingSnapshot() {
-  if (!mqttInput) return;
+  if (!mqttInput || shuttingDown) return;
   try {
     const pkg = await getPackageInfo();
+    if (shuttingDown) return;
     const tableSuffixes = ["_data", "_table"] as const;
     const mappingsFromTopics = activeTopics.flatMap((topic) => {
       const tablePrefix = TopicMatcher.findTable(config, topic);
@@ -996,44 +1066,64 @@ async function publishQuestDbMappingSnapshot() {
         }))
       );
     });
-    const mappings = mappingsFromTopics;
-
+    const processName = config.uns?.processName ?? "uns-archiver";
     const payload = {
       package: pkg.name,
       version: pkg.version,
-      processName: config.uns?.processName ?? "uns-archiver",
       questdb: {
         configurationString: resolveQuestDbPublicConfigurationString(config.questdb),
       },
-      mappings,
-      ...(activeTopicsAuthoritative ? { activeTopicsSnapshot: { schemaVersion: 1, topics: [...activeTopics] } } : {}),
       updatedAt: new Date().toISOString(),
     };
-    const hash = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
-    if (hash === lastMappingHash) return;
-    const versionSegment = pkg.version.replace(/\./g, "-");
-    const topic = `uns-infra/${pkg.name}/${versionSegment}/${config.uns?.processName ?? "uns-archiver"}/questdb-mapping`;
-    const message = JSON.stringify(payload);
-    await withRetry(
-      "Publish QuestDB mapping",
-      async () =>
-        await mqttPublishCircuit.execute(async () => {
-          await mqttInput!.publishMessage(topic, message);
-        }),
-      {
-        attempts: 4,
-        baseDelayMs: 250,
-        maxDelayMs: 2500,
-        shouldRetry: isRetryableNetworkError,
-        onRetry: ({ attempt, delayMs, error }) => {
-          logger.warn(`QuestDB mapping publish retry (attempt ${attempt}) in ${delayMs}ms: ${errorMessage(error)}`);
-        },
-      },
-    );
-    lastMappingHash = hash;
+    const live = {
+      ...payload, processName, mappings: mappingsFromTopics,
+      ...(activeTopicsAuthoritative ? { activeTopicsSnapshot: { schemaVersion: 1, topics: [...activeTopics] } } : {}),
+    };
+    await sendQuestDbMapping(live);
+    if (!shuttingDown && historicalImports && activeTopicsAuthoritative && inputProcess?.isActive() === true) {
+      const sources = historicalImports.publishedSources();
+      if (sources.length) {
+        const mappings = sources
+          .filter(source => activeTopicSet.has(source.topic) && source.identity === historicalTargetIdentity(source.topic))
+          .map(({ identity: _identity, ...mapping }) => mapping);
+        // Use a separate publisher so an import can never replace a live mapping
+        // while this instance is waiting for its first MQTT reading after restart.
+        await sendQuestDbMapping({
+          ...payload, processName: processName + "-historical-import", mappings,
+          activeTopicsSnapshot: { schemaVersion: 1, topics: [...new Set(mappings.map(mapping => mapping.topic))] },
+        });
+      }
+    }
   } catch (err) {
     logger.error(`Failed to publish QuestDB mapping: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+async function sendQuestDbMapping(payload: {
+  package: string;
+  version: string;
+  processName: string;
+  questdb: { configurationString: string | undefined };
+  mappings: Array<{ topic: string; tableName: string; tablePrefix: string; dataGroup: string | null; suffix: "_data" | "_table" }>;
+  activeTopicsSnapshot?: { schemaVersion: number; topics: string[] };
+  updatedAt: string;
+}) {
+  const version = payload.version.replace(/\./g, "-");
+  const topic = `uns-infra/${payload.package}/${version}/${payload.processName}/questdb-mapping`;
+  const message = JSON.stringify(payload);
+  await withRetry(
+    "Publish QuestDB mapping",
+    () => mqttPublishCircuit.execute(() => mqttInput!.publishMessage(topic, message)),
+    {
+      attempts: 4,
+      baseDelayMs: 250,
+      maxDelayMs: 2500,
+      shouldRetry: isRetryableNetworkError,
+      onRetry: ({ attempt, delayMs, error }) => {
+        logger.warn(`QuestDB mapping publish retry (attempt ${attempt}) in ${delayMs}ms: ${errorMessage(error)}`);
+      },
+    },
+  );
 }
 
 function archiverProcess(): UnsProxyProcessWithApi {
@@ -1053,6 +1143,7 @@ function archiverProcess(): UnsProxyProcessWithApi {
       isSourceActive: () => inputProcess?.isActive() === true,
       journal: targetJournal,
       assertSourceReady: () => {
+        historicalImports?.assertHandoverReady();
         if (fallbackStorageError) throw new Error("Archiver durable file storage has failed; migration is blocked.");
         if (latestQuestDbHealth?.healthy === false) throw new Error("Archiver database is unavailable; keep the source and its queue before migration.");
         assertStoredQueueDrainedForHandover(storedReplay.diagnostics(), lastDurableFileAt);
@@ -1191,6 +1282,18 @@ async function setupApiProxy() {
         },
         handler: () => undefined,
       },
+      historyImports: {
+        topic: CONTROL_TOPIC, asset: CONTROL_ASSET, objectType: CONTROL_OBJECT_TYPE,
+        objectId: CONTROL_OBJECT_ID, attribute: "history-imports", method: "GET",
+        description: "List configured historical import profiles and recent jobs.",
+        tags: ["archiver", "history-import"], handler: () => undefined,
+      },
+      historyImportControl: {
+        topic: CONTROL_TOPIC, asset: CONTROL_ASSET, objectType: CONTROL_OBJECT_TYPE,
+        objectId: CONTROL_OBJECT_ID, attribute: "history-import-control", method: "POST",
+        description: "Preview a historical database import or start an exact reviewed preview.",
+        tags: ["archiver", "history-import"], handler: () => undefined,
+      },
       imports: {
         topic: CONTROL_TOPIC, asset: CONTROL_ASSET, objectType: CONTROL_OBJECT_TYPE,
         objectId: CONTROL_OBJECT_ID, attribute: "imports", method: "GET",
@@ -1240,6 +1343,15 @@ async function setupApiProxy() {
     await apiProxy.post(CONTROL_TOPIC, CONTROL_ASSET, CONTROL_OBJECT_TYPE, CONTROL_OBJECT_ID,
       "replay-control", { ...serviceApiInteractions.replayControl.options, operatorOperations: replayCommandOperations,
         requestBody: { required: true, description: "Durable replay pause/resume", schema: replayCommandOpenApiSchema } });
+    if (historyApi) {
+      await apiProxy.get(CONTROL_TOPIC, CONTROL_ASSET, CONTROL_OBJECT_TYPE, CONTROL_OBJECT_ID,
+        "history-imports", { ...serviceApiInteractions.historyImports.options,
+          operatorOperations: historicalImportStatusOperations });
+      await apiProxy.post(CONTROL_TOPIC, CONTROL_ASSET, CONTROL_OBJECT_TYPE, CONTROL_OBJECT_ID,
+        "history-import-control", { ...serviceApiInteractions.historyImportControl.options,
+          operatorOperations: historicalImportOperations,
+          requestBody: { required: true, description: "Historical import preview or start", schema: historicalImportOpenApiSchema } });
+    }
     apiProxy.event.on("apiGetEvent", handleApiGetEvent);
     apiProxy.event.on("apiPostEvent", handleImportPostEvent);
     apiProxy.event.on("error", (err: any) => {
@@ -1290,6 +1402,7 @@ async function handleApiGetEvent(event: any) {
   const path = event?.req?.path ?? "";
   const action = (event?.req?.query?.action as string | undefined)?.toLowerCase();
   try {
+    if (path.endsWith("/history-imports") && historyApi) { historyApi.get(event); return; }
     if (path.endsWith("/replay")) { replayApi.get(event); return; }
     if (path.endsWith("/targets")) { targetApi.get(event); return; }
     if (path.endsWith("/imports")) {
@@ -1335,6 +1448,7 @@ async function handleApiGetEvent(event: any) {
 }
 
 async function handleImportPostEvent(event: any) {
+  if (event?.req?.path?.endsWith("/history-import-control") && historyApi) { await historyApi.post(event); return; }
   if (event?.req?.path?.endsWith("/replay-control")) { replayApi.post(event); return; }
   if (event?.req?.path?.endsWith("/target-control")) { await targetApi.post(event); return; }
   if (!event?.req?.path?.endsWith("/import-control")) {

@@ -180,6 +180,45 @@ export interface ProjectAppConfig {
             reserveBytes?: number | undefined;
             maxPendingPerTarget?: number | undefined;
         } | undefined;
+        /** Startup-only database backfill profiles. Connections must use read-only database accounts. */
+        historicalImport?: {
+            sources: {
+                id: string;
+                driver: "questdb";
+                connectionString: string;
+            }[];
+            profiles: {
+                id: string;
+                source: string;
+                /** The only WAL table read by the reviewed SELECT. */
+                sourceTable: string;
+                targetPrefix: string;
+                query: string;
+                mappings: ({
+                    sourceSeries: string;
+                    topic: string;
+                    dataGroup?: string | undefined;
+                    /** Exclusive UTC cutoff for this mapping. */
+                    before?: string | undefined;
+                    kind: "data";
+                    column: string;
+                    type: "number" | "string";
+                    unit?: string | undefined;
+                } | {
+                    sourceSeries: string;
+                    topic: string;
+                    dataGroup?: string | undefined;
+                    /** Exclusive UTC cutoff for this mapping. */
+                    before?: string | undefined;
+                    kind: "table";
+                    columns: {
+                        name: string;
+                        column: string;
+                        type: "double" | "string" | "boolean";
+                    }[];
+                })[];
+            }[];
+        } | undefined;
         /** Node-local allowlist of sealed legacy spool directories. Select by ID through the import API; never synchronize these host paths across controllers. Changes require archiver restart. */
         legacySources?: {
             id: string;

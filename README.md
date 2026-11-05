@@ -178,6 +178,13 @@ combination. Existing controller instances retain their own copied config
 across releases, so review and update that instance config when upgrading
 from an older profile.
 
+### Import history from a database
+
+The opt-in [historical database import](docs/historical-database-import.md)
+reads a reviewed QuestDB source profile and archives historical scalar or
+table rows through the retained writer. It exposes preview, start and status
+through the Archiver API and declared operator operations.
+
 ### Import a sealed legacy spool after an upgrade
 
 The new instance continues MQTT capture into its own `event_storage`. Importing

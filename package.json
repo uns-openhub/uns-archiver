@@ -1,10 +1,10 @@
 {
   "name": "uns-archiver",
-  "version": "5.2.33",
+  "version": "5.2.34",
   "description": "UNS OpenHub add-on that archives UNS data and table packets to QuestDB.",
   "private": true,
   "license": "MIT",
-  "author": "Aljo\u0161a Vister",
+  "author": "Aljoša Vister",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/uns-openhub/uns-archiver.git"
@@ -45,6 +45,7 @@
     "dotenv": "^17.4.2",
     "graphql": "^17.0.2",
     "graphql-request": "^7.4.0",
+    "pg": "^8.23.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -53,6 +54,7 @@
     "@graphql-codegen/typescript-operations": "^6.1.5",
     "@graphql-codegen/typescript-resolvers": "^6.1.0",
     "@types/node": "^26.2.0",
+    "@types/pg": "^8.23.1",
     "prettier": "^3.9.6",
     "rimraf": "^6.1.2",
     "tsx": "^4.23.12",
