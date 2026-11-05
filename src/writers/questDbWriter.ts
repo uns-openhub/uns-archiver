@@ -75,9 +75,9 @@ export type QuestDbEntityIdentityEvidence = {
 
 export type TargetWritePayload = {
   packet: IUnsPacket; prefix: string; meta?: UnsTopicMetadata; mode?: IngestMode;
-  identity?: QuestDbEntityIdentityEvidence; maxBatchWaitMs?: number;
+  identity?: QuestDbEntityIdentityEvidence; maxBatchWaitMs?: number; eventTimeMicros?: string;
 };
-type WriteOptions = { maxBatchWaitMs?: number; occurrenceId?: string; legacyKey?: string };
+type WriteOptions = { maxBatchWaitMs?: number; occurrenceId?: string; legacyKey?: string; eventTimeMicros?: string };
 
 /** Split only at actual writer destinations, using the same name function as ILP. */
 export function resolvePacketTargets(packet: IUnsPacket, prefix: string) {
@@ -99,10 +99,10 @@ export class QuestDBWriter {
     return this.targetJournal;
   }
   private async writeJournalEntry(entry: JournalEntry<TargetWritePayload>) {
-    const { packet, prefix, meta, mode, identity, maxBatchWaitMs } = entry.payload;
+    const { packet, prefix, meta, mode, identity, maxBatchWaitMs, eventTimeMicros } = entry.payload;
     const resolved = resolvePacketTargets(packet, prefix);
     if (resolved.length !== 1 || resolved[0].table !== entry.table) throw new Error("Retained target does not match packet; review required");
-    await this.writeUnsPacketDirect(packet, prefix, entry.topic, meta, mode, identity, { maxBatchWaitMs });
+    await this.writeUnsPacketDirect(packet, prefix, entry.topic, meta, mode, identity, { maxBatchWaitMs, eventTimeMicros });
   }
   private readonly questDbExecConfig: QuestDbExecConfig | null;
   private readonly clearedWindows = new Set<string>();
@@ -200,6 +200,23 @@ export class QuestDBWriter {
     }
   }
 
+  /** Internal metadata/overlap reads built by the historical import target inspector. */
+  async readHistoricalTarget(sql: string): Promise<unknown[][]> {
+    if (!this.questDbExecConfig) throw new Error("QuestDB exec is not configured");
+    const response = await fetch(this.buildExecQueryUrl(sql), {
+      headers: this.questDbExecConfig.headers,
+      signal: AbortSignal.timeout(2_500),
+      redirect: "error",
+    });
+    if (!response.ok) throw new Error("QuestDB historical target inspection failed");
+    const body: unknown = await response.json();
+    if (!body || typeof body !== "object" || !("dataset" in body)
+      || !Array.isArray(body.dataset) || !body.dataset.every(Array.isArray)) {
+      throw new Error("Invalid QuestDB metadata response");
+    }
+    return body.dataset;
+  }
+
   // Add a public method to close the questDbOutput connection
   async close() {
     await this.batcher.close();
@@ -232,7 +249,8 @@ export class QuestDBWriter {
     const entries = resolvePacketTargets(unsPacket, matchingTable).map(target => ({
       id: `${id}:${target.kind}`, table: target.table, topic: String(inputTopic), legacyKey: writeOptions?.legacyKey,
       payload: { packet: target.packet, prefix: matchingTable, meta: topicMeta, mode: ingestMode,
-        identity: entityIdentity, maxBatchWaitMs: writeOptions?.maxBatchWaitMs },
+        identity: entityIdentity, maxBatchWaitMs: writeOptions?.maxBatchWaitMs,
+        eventTimeMicros: writeOptions?.eventTimeMicros },
     }));
     const written = await this.targetJournal.submit(entries);
     if (writeOptions?.legacyKey && !written) throw new TargetWriteDeferred("Target retained until pause/database recovery");
@@ -387,7 +405,11 @@ export class QuestDBWriter {
         }
 
         await this.performWindowDeleteOnce(tableName, topicTag, windowStart, windowEnd, time, ingestMode);
-        await builder.at(time, "ms");
+        if (writeOptions?.eventTimeMicros !== undefined) {
+          await builder.at(BigInt(writeOptions.eventTimeMicros), "us");
+        } else {
+          await builder.at(time, "ms");
+        }
       }, writeOptions?.maxBatchWaitMs);
     }
 
@@ -554,7 +576,11 @@ export class QuestDBWriter {
           );
         }
         await this.performWindowDeleteOnce(tableName, topicTag, windowStart, windowEnd, time, ingestMode);
-        await builder.at(time, "ms");
+        if (writeOptions?.eventTimeMicros !== undefined) {
+          await builder.at(BigInt(writeOptions.eventTimeMicros), "us");
+        } else {
+          await builder.at(time, "ms");
+        }
       }, writeOptions?.maxBatchWaitMs);
     }
   }

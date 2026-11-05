@@ -2086,6 +2086,298 @@
                 }
               }
             },
+            "historicalImport": {
+              "description": "Startup-only database backfill profiles. Connections must use read-only database accounts.",
+              "type": "object",
+              "properties": {
+                "sources": {
+                  "minItems": 1,
+                  "maxItems": 16,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9-]{0,63}$"
+                      },
+                      "driver": {
+                        "type": "string",
+                        "const": "questdb"
+                      },
+                      "connectionString": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "provider": {
+                                    "type": "string",
+                                    "const": "env",
+                                    "description": "Load the secret from an environment variable."
+                                  },
+                                  "key": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Name of the environment variable to read."
+                                  },
+                                  "optional": {
+                                    "description": "Allow the variable to be absent without throwing during resolution.",
+                                    "type": "boolean"
+                                  },
+                                  "default": {
+                                    "description": "Fallback value when optional is true and the variable is missing.",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "provider",
+                                  "key"
+                                ],
+                                "additionalProperties": false,
+                                "description": "Secret placeholder resolved from process.env."
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "provider": {
+                                    "type": "string",
+                                    "const": "infisical",
+                                    "description": "Load the secret from Infisical."
+                                  },
+                                  "path": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Secret folder path in Infisical, e.g. '/app/database'."
+                                  },
+                                  "key": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Secret key/name inside the given path."
+                                  },
+                                  "optional": {
+                                    "description": "Allow the secret to be absent without throwing during resolution.",
+                                    "type": "boolean"
+                                  },
+                                  "environment": {
+                                    "description": "Infisical environment override (defaults to current mode if omitted).",
+                                    "type": "string"
+                                  },
+                                  "projectId": {
+                                    "description": "Optional Infisical project identifier when not using the default.",
+                                    "type": "string"
+                                  },
+                                  "default": {
+                                    "description": "Fallback value when the secret is missing and optional resolution is allowed.",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "provider",
+                                  "path",
+                                  "key"
+                                ],
+                                "additionalProperties": false,
+                                "description": "Secret placeholder resolved from Infisical."
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "driver",
+                      "connectionString"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "profiles": {
+                  "minItems": 1,
+                  "maxItems": 32,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9-]{0,63}$"
+                      },
+                      "source": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9-]{0,63}$"
+                      },
+                      "sourceTable": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z_][A-Za-z_0-9]{0,63}$",
+                        "description": "The only WAL table read by the reviewed SELECT."
+                      },
+                      "targetPrefix": {
+                        "type": "string",
+                        "pattern": "^history_import_[a-z][a-z0-9_]{0,39}$"
+                      },
+                      "query": {
+                        "type": "string",
+                        "minLength": 10,
+                        "maxLength": 16000,
+                        "pattern": "^SELECT\\s"
+                      },
+                      "mappings": {
+                        "minItems": 1,
+                        "maxItems": 64,
+                        "type": "array",
+                        "items": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "sourceSeries": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 512
+                                },
+                                "topic": {
+                                  "type": "string",
+                                  "minLength": 3,
+                                  "maxLength": 512,
+                                  "pattern": "^[^/#+'\\x00-\\x20]+(?:\\/[^/#+'\\x00-\\x20]+)+$"
+                                },
+                                "dataGroup": {
+                                  "type": "string",
+                                  "pattern": "^[A-Za-z_][A-Za-z_0-9]{0,63}$"
+                                },
+                                "before": {
+                                  "description": "Exclusive UTC cutoff for this mapping.",
+                                  "type": "string",
+                                  "minLength": 20,
+                                  "maxLength": 27
+                                },
+                                "kind": {
+                                  "type": "string",
+                                  "const": "data"
+                                },
+                                "column": {
+                                  "type": "string",
+                                  "pattern": "^[A-Za-z_][A-Za-z_0-9]{0,63}$"
+                                },
+                                "type": {
+                                  "type": "string",
+                                  "enum": [
+                                    "number",
+                                    "string"
+                                  ]
+                                },
+                                "unit": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 40
+                                }
+                              },
+                              "required": [
+                                "sourceSeries",
+                                "topic",
+                                "kind",
+                                "column",
+                                "type"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "sourceSeries": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 512
+                                },
+                                "topic": {
+                                  "type": "string",
+                                  "minLength": 3,
+                                  "maxLength": 512,
+                                  "pattern": "^[^/#+'\\x00-\\x20]+(?:\\/[^/#+'\\x00-\\x20]+)+$"
+                                },
+                                "dataGroup": {
+                                  "type": "string",
+                                  "pattern": "^[A-Za-z_][A-Za-z_0-9]{0,63}$"
+                                },
+                                "before": {
+                                  "description": "Exclusive UTC cutoff for this mapping.",
+                                  "type": "string",
+                                  "minLength": 20,
+                                  "maxLength": 27
+                                },
+                                "kind": {
+                                  "type": "string",
+                                  "const": "table"
+                                },
+                                "columns": {
+                                  "minItems": 1,
+                                  "maxItems": 64,
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "name": {
+                                        "type": "string",
+                                        "pattern": "^[A-Za-z_][A-Za-z_0-9]{0,63}$"
+                                      },
+                                      "column": {
+                                        "type": "string",
+                                        "pattern": "^[A-Za-z_][A-Za-z_0-9]{0,63}$"
+                                      },
+                                      "type": {
+                                        "type": "string",
+                                        "enum": [
+                                          "double",
+                                          "string",
+                                          "boolean"
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "name",
+                                      "column",
+                                      "type"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                }
+                              },
+                              "required": [
+                                "sourceSeries",
+                                "topic",
+                                "kind",
+                                "columns"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "source",
+                      "sourceTable",
+                      "targetPrefix",
+                      "query",
+                      "mappings"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "sources",
+                "profiles"
+              ],
+              "additionalProperties": false
+            },
             "legacySources": {
               "description": "Node-local allowlist of sealed legacy spool directories. Select by ID through the import API; never synchronize these host paths across controllers. Changes require archiver restart.",
               "maxItems": 16,
