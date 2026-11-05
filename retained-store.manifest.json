@@ -1,0 +1,39 @@
+{
+  "protocol": 1,
+  "format": "uns-archiver-queue-v1",
+  "resources": [
+    {
+      "id": "events",
+      "path": "event_storage",
+      "kind": "directory",
+      "required": true,
+      "backup": "payload"
+    },
+    {
+      "id": "replay",
+      "path": "archiver-replay-control.json",
+      "kind": "file",
+      "required": false,
+      "backup": "metadata"
+    },
+    {
+      "id": "target-policy",
+      "path": "archiver-target-policy.json",
+      "kind": "file",
+      "required": false,
+      "backup": "metadata"
+    },
+    {
+      "id": "import-sources",
+      "path": "legacy-import-sources.json",
+      "kind": "file",
+      "required": false,
+      "backup": "metadata"
+    }
+  ],
+  "legacyVersions": [
+    "5.2.31",
+    "5.2.32"
+  ],
+  "storageProtocol": 1
+}

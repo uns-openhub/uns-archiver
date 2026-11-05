@@ -1,3 +1,7 @@
+import {realpathSync as realpathSyncForStore} from "node:fs";
+import {openRetainedStoreLease, readRetainedStoreManifest, readRetainedStoreJson, resolveRetainedStoreResources} from "@uns-kit/core/runtime/retained-store.js";
+import {fileURLToPath} from "node:url";
+import { ReplayControl, replayControlApi, replayStatusOperations, replayCommandOperations, replayCommandOpenApiSchema } from "./replay-control.js";
 import { occurrenceId, persistEventFile } from "./durable-event-file.js";
 import { targetControlApi, targetCommandOpenApiSchema, targetStatusOperatorOperations, targetControlOperatorOperations } from "./target-control-api.js";
 import { assertStoredQueueDrainedForHandover, createArchiverHandoverState } from "./archiver-handover-state.js";
@@ -80,7 +84,12 @@ let pkgInfo: { name: string; version: string } | null = null;
 let verifiedManagedIdentity: { controllerName: string; instanceId: string } | null = null;
 
 
-const EVENT_STORAGE_DIR = "./event_storage";
+const retainedPackageRoot=path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const retainedPackage=readRetainedStoreJson(path.join(retainedPackageRoot,"package.json")) as {name:string;version:string};
+const retainedStore = resolveRetainedStoreResources(realpathSyncForStore(path.resolve(".")),
+  readRetainedStoreManifest(retainedPackageRoot), {rttNode:retainedPackage.name,version:process.env.version ?? retainedPackage.version,...(process.env.RTT_INSTANCE_ID ? {instanceId:process.env.RTT_INSTANCE_ID} : {})});
+const retainedLease=retainedStore.binding ? openRetainedStoreLease(retainedStore.binding) : undefined;
+const EVENT_STORAGE_DIR = retainedStore.resources.events!;
 const EVENT_FILE_EXTENSION = ".event";
 const EVENT_PROCESSING_EXTENSION = ".processing";
 const FAILED_EVENT_STORAGE_DIR = path.join(EVENT_STORAGE_DIR, "failed");
@@ -410,14 +419,21 @@ const questDbWriter = new QuestDBWriter(
 // Startup-only disk policy. The portable pause file contains no database credentials or event payloads.
 let fallbackStorageError: string | null = null;
 let lastDurableFileAt = 0;
+let replayControl: ReplayControl | undefined;
 const targetJournal = questDbWriter.configureTargetJournal({
   directory: path.join(EVENT_STORAGE_DIR, "targets"),
-  policyFile: path.resolve("archiver-target-policy.json"),
+  policyFile: retainedStore.resources["target-policy"]!,
   destinationId: createHash("sha256").update(resolveQuestDbPublicConfigurationString(config.questdb) ?? "unresolved").digest("hex"),
   ...((config as any).archiver?.targetJournal ?? {}),
-  canReplay: () => !ingestionPaused && (handoverDraining || (!shuttingDown && inputProcess?.isActive() === true)),
+  canReplay: () => !ingestionPaused && replayControl?.paused !== true && (handoverDraining || (!shuttingDown && inputProcess?.isActive() === true)),
   onFault: message => logger.error(message),
 });
+replayControl = new ReplayControl(retainedStore.resources.replay!, () =>
+  targetJournal.snapshot().targets.reduce((n, t) => n + t.inFlight, 0)
+  + storedReplay.diagnostics().inFlight + (storedReplay.diagnostics().active ? 1 : 0)
+  + legacyImports.status().reduce((n, source) => n + (source.job?.inFlight ?? 0), 0));
+if (retainedStore.binding) replayControl.ensureMaintenancePause(retainedStore.binding.operationId);
+const replayApi = replayControlApi(replayControl, () => !shuttingDown && inputProcess?.isActive() === true, () => retainedStore.binding ? {storeId:retainedStore.binding.storeId,generation:retainedStore.binding.generation,operationId:retainedStore.binding.operationId,format:retainedStore.binding.format} : null);
 const targetApi = targetControlApi(targetJournal, () => !shuttingDown && inputProcess?.isActive() === true);
 
 const estimateMqttEventBytes = (mqttEvent: { topic: any; message: any }): number => {
@@ -470,7 +486,7 @@ const storedReplay = new StoredEventReplay({
   eventFileExtension: EVENT_FILE_EXTENSION,
   processingExtension: EVENT_PROCESSING_EXTENSION,
   isReady: () => activeTopicsReady,
-  isStopping: () => shuttingDown || ingestionPaused || inputProcess?.isActive() !== true,
+  isStopping: () => shuttingDown || ingestionPaused || replayControl?.paused === true || inputProcess?.isActive() !== true,
   hasLiveHeadroom: () =>
     hasStoredReplayLiveHeadroom(
       ingestQueue?.snapshot(),
@@ -492,7 +508,7 @@ const legacyStoragePolicyDigest = () => createHash("sha256").update(JSON.stringi
 })).digest("hex");
 await ensureEventStorageDirectories();
 const legacyImports = new LegacyImportManager({
-  sources: await loadLegacySources(path.resolve("."), legacyRuntimeSettings?.legacySources),
+  sources: await loadLegacySources(path.resolve("."), legacyRuntimeSettings?.legacySources, retainedStore.resources["import-sources"]),
   settings: { ...legacyRuntimeSettings?.legacyImport,
     concurrency: resolveLegacyImportConcurrency(ingestQueueMaxEvents,
       legacyRuntimeSettings?.legacyImport?.concurrency) },
@@ -500,7 +516,7 @@ const legacyImports = new LegacyImportManager({
   instanceId: `${config.uns.processName}:${process.env.UNS_CONTROLLER_NAME ?? "standalone"}:${path.resolve(".")}`,
   policyDigest: legacyStoragePolicyDigest,
   acceptingCommands: () => !shuttingDown,
-  canWrite: () => !shuttingDown && !ingestionPaused && inputProcess?.isActive() === true && latestQuestDbHealth?.healthy !== false,
+  canWrite: () => !shuttingDown && !ingestionPaused && replayControl?.paused !== true && inputProcess?.isActive() === true && latestQuestDbHealth?.healthy !== false,
   hasLiveHeadroom: () => hasStoredReplayLiveHeadroom(ingestQueue?.snapshot(), ingestQueueMaxEvents, ingestQueueMaxBytes),
   write: writeLegacyPacket,
   acknowledged: key => targetJournal.acknowledgeLegacy(key),
@@ -540,6 +556,7 @@ const archiverShutdown = createArchiverShutdown(
     },
     closeQuestDb: async () => {
       await questDbWriter.close();
+      retainedLease?.close();
     },
   },
 );
@@ -619,7 +636,7 @@ async function publishArchiverServiceMetadata() {
   );
   latestIngestHealth = ingestHealth;
   const legacyImportHealth = assessLegacyImportHealth(legacyImports.status());
-  const writeHealth = assessArchiveWriteHealth(questDbWriter.getBatchDiagnostics(), ingestQueue?.snapshot(), ingestionPaused, new Date(), inspection);
+  const writeHealth = assessArchiveWriteHealth(questDbWriter.getBatchDiagnostics(), ingestQueue?.snapshot(), ingestionPaused || replayControl?.paused === true, new Date(), inspection);
   if (previousIngestHealthy !== ingestHealth.healthy) {
     logger.info(`Archive ingest health is ${ingestHealth.state}${ingestHealth.message ? `: ${ingestHealth.message}` : "."}`);
   }
@@ -648,6 +665,8 @@ async function publishArchiverServiceMetadata() {
       : {}),
     extra: {
       dependencies: [health, ingestHealth, writeHealth, targetHealth, currentInputReadiness(), ...(legacyImportHealth ? [legacyImportHealth] : [])],
+      retainedStore: retainedStore.binding ? {storeId:retainedStore.binding.storeId,generation:retainedStore.binding.generation,operationId:retainedStore.binding.operationId,format:retainedStore.binding.format} : null,
+      replayControl: replayControl?.snapshot(),
       targetJournal: { ...targetStatus, policy: { revision: targetStatus.policy.revision, pausedRules: targetStatus.policy.rules.length } },
       questdbHealth: health,
       ingestHealth,
@@ -1030,7 +1049,7 @@ function archiverProcess(): UnsProxyProcessWithApi {
         storage: config.questdb.dataStorage,
         destination: resolveQuestDbPublicConfigurationString(config.questdb),
       }),
-      isPaused: () => ingestionPaused,
+      isPaused: () => ingestionPaused || replayControl?.paused === true,
       isSourceActive: () => inputProcess?.isActive() === true,
       journal: targetJournal,
       assertSourceReady: () => {
@@ -1110,6 +1129,16 @@ async function setupApiProxy() {
       };
     }
     const serviceApiInteractions = buildServiceApiInteractions(processName, {
+      replay: {
+        topic: CONTROL_TOPIC, asset: CONTROL_ASSET, objectType: CONTROL_OBJECT_TYPE,
+        objectId: CONTROL_OBJECT_ID, attribute: "replay", method: "GET",
+        description: "Durable pause of queue replay, including its in-flight boundary.", handler: () => undefined,
+      },
+      replayControl: {
+        topic: CONTROL_TOPIC, asset: CONTROL_ASSET, objectType: CONTROL_OBJECT_TYPE,
+        objectId: CONTROL_OBJECT_ID, attribute: "replay-control", method: "POST",
+        description: "Revision-checked durable pause/resume of SQLite, file and legacy replay. New MQTT admission continues within storage limits.", handler: () => undefined,
+      },
       targets: {
         topic: CONTROL_TOPIC, asset: CONTROL_ASSET, objectType: CONTROL_OBJECT_TYPE,
         objectId: CONTROL_OBJECT_ID, attribute: "targets", method: "GET",
@@ -1206,6 +1235,11 @@ async function setupApiProxy() {
       "target-control", { ...serviceApiInteractions.targetControl.options,
         operatorOperations: targetControlOperatorOperations,
         requestBody: { required: true, description: "Preview or revision-checked target pause/resume command", schema: targetCommandOpenApiSchema } });
+    await apiProxy.get(CONTROL_TOPIC, CONTROL_ASSET, CONTROL_OBJECT_TYPE, CONTROL_OBJECT_ID,
+      "replay", { ...serviceApiInteractions.replay.options, operatorOperations: replayStatusOperations });
+    await apiProxy.post(CONTROL_TOPIC, CONTROL_ASSET, CONTROL_OBJECT_TYPE, CONTROL_OBJECT_ID,
+      "replay-control", { ...serviceApiInteractions.replayControl.options, operatorOperations: replayCommandOperations,
+        requestBody: { required: true, description: "Durable replay pause/resume", schema: replayCommandOpenApiSchema } });
     apiProxy.event.on("apiGetEvent", handleApiGetEvent);
     apiProxy.event.on("apiPostEvent", handleImportPostEvent);
     apiProxy.event.on("error", (err: any) => {
@@ -1256,6 +1290,7 @@ async function handleApiGetEvent(event: any) {
   const path = event?.req?.path ?? "";
   const action = (event?.req?.query?.action as string | undefined)?.toLowerCase();
   try {
+    if (path.endsWith("/replay")) { replayApi.get(event); return; }
     if (path.endsWith("/targets")) { targetApi.get(event); return; }
     if (path.endsWith("/imports")) {
       importApi.get(event);
@@ -1273,10 +1308,12 @@ async function handleApiGetEvent(event: any) {
         topicAdmission: archiveTopicAdmission.snapshot(),
         ...queueStatus,
         targetJournal: targetJournal.snapshot(),
+        retainedStore: retainedStore.binding ? {storeId:retainedStore.binding.storeId,generation:retainedStore.binding.generation,operationId:retainedStore.binding.operationId,format:retainedStore.binding.format} : null,
+      replayControl: replayControl?.snapshot(),
         storedReplay: storedReplay.diagnostics(),
         legacyImports: legacyImports.status(),
         inputReadiness: currentInputReadiness(),
-        archiveWriteHealth: assessArchiveWriteHealth(questDbWriter.getBatchDiagnostics(), ingestQueue?.snapshot(), ingestionPaused, new Date(), storedReplay.snapshot()),
+        archiveWriteHealth: assessArchiveWriteHealth(questDbWriter.getBatchDiagnostics(), ingestQueue?.snapshot(), ingestionPaused || replayControl?.paused === true, new Date(), storedReplay.snapshot()),
         questDbBatch: questDbWriter.getBatchDiagnostics(),
         ingestQueue: ingestQueue?.snapshot(),
         processedEventIdsSize: processedEventIds.size,
@@ -1298,6 +1335,7 @@ async function handleApiGetEvent(event: any) {
 }
 
 async function handleImportPostEvent(event: any) {
+  if (event?.req?.path?.endsWith("/replay-control")) { replayApi.post(event); return; }
   if (event?.req?.path?.endsWith("/target-control")) { await targetApi.post(event); return; }
   if (!event?.req?.path?.endsWith("/import-control")) {
     event.res.status(404).json({ error: "unknown-import-endpoint" }); return;
@@ -1762,7 +1800,7 @@ async function ensureEventStorageDirectories(): Promise<void> {
  * the live MQTT queue still has its reserved headroom.
  */
 async function processStoredEvents(): Promise<void> {
-  if (ingestionPaused || shuttingDown) return;
+  if (ingestionPaused || replayControl?.paused || shuttingDown) return;
   await storedReplay.run();
 }
 

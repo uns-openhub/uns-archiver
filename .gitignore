@@ -62,3 +62,7 @@ legacy-import-sources.json
 # Operator-owned portable pause policy; copied by the generic Runtime state contract.
 archiver-target-policy.json
 archiver-target-policy.json.*.tmp
+
+# Durable operator replay pause (must follow the retained instance during maintenance).
+archiver-replay-control.json
+archiver-replay-control.json.*.tmp
