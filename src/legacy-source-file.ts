@@ -9,10 +9,11 @@ const MAX_BYTES = 64 * 1024;
 export async function loadLegacySources(
   instanceDirectory: string,
   configured: LegacySource[] = [],
+  sourceFile = path.join(instanceDirectory, LEGACY_SOURCE_FILE),
 ): Promise<LegacySource[]> {
   let handle;
   try {
-    handle = await fs.open(path.join(instanceDirectory, LEGACY_SOURCE_FILE), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    handle = await fs.open(sourceFile, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return configured;
     throw new Error("Local legacy source file is unavailable or unsafe.");

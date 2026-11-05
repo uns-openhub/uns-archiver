@@ -10,6 +10,7 @@ import { createRequire } from "node:module";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { once } from "node:events";
+import {readRetainedStoreManifest,prepareRetainedStoreMove,applyRetainedStoreMove,prepareRetainedStoreReturn,writeRetainedStoreBinding,writeRetainedStoreJson} from "@uns-kit/core/runtime/retained-store.js";
 import { MQTT_COOPERATIVE_STOP_TOPIC } from "@uns-kit/core/runtime/mqtt-drain.js";
 
 const endpoint = process.env.ARCHIVER_TEST_QUESTDB;
@@ -25,7 +26,7 @@ test(
   "actual Archiver process: MQTT, discovered JWKS API, one-table pause, database outage, lost response and restart",
   {
     skip: !endpoint || !broker,
-    timeout: 180000,
+    timeout: 360000,
   },
   async () => {
     assert.equal(new URL(endpoint!).hostname, "127.0.0.1");
@@ -263,7 +264,7 @@ test(
     let launchId = "";
     let passiveChild: ReturnType<typeof spawn> | undefined;
     const logStreams: ReturnType<typeof createWriteStream>[] = [];
-    const start = () => {
+    const start = (workingDirectory=root,instanceId?:string) => {
       generation++;
       launchId = randomUUID();
       routes.clear();
@@ -273,12 +274,13 @@ test(
       );
       logStreams.push(stream);
       child = spawn(process.execPath, [path.join(repo, "dist/index.js")], {
-        cwd: root,
+        cwd: workingDirectory,
         env: {
           PATH: process.env.PATH,
           NODE_ENV: "test",
           UNS_SERVICE_TOKEN_FILE: path.join(root, "service-token"),
           UNS_HANDOVER_LAUNCH_ID: launchId,
+          ...(instanceId ? {RTT_INSTANCE_ID:instanceId} : {}),
         },
         stdio: ["ignore", "pipe", "pipe", "ipc"],
       });
@@ -405,6 +407,7 @@ test(
       if (signal === "SIGTERM") assert.equal(child.exitCode, 0);
     };
     let databaseStopped = false;
+    const adoptionRoots:string[]=[];
     try {
       await waitFor("local QuestDB", async () => {
         try {
@@ -651,6 +654,73 @@ test(
       actual = await Promise.all([0, 1, 2].map(readRows));
       for (let index = 0; index < tables.length; index++) assert.deepEqual(actual[index], expected.get(tables[index]));
       observations.topicExclusion = { liveReload: true, excludedNewEvents: 1, excludedRowsWritten: 0, healthyRowsWritten: 1, clearedAfterRestart: true };
+      await waitFor("durable replay routes", () => routes.has("replay") && routes.has("replay-control"));
+      const replayPost = (body: unknown, signal?: AbortSignal) => fetch(routeUrl("replay-control")!, {
+        method: "POST", headers: { authorization: `Bearer ${operatorToken}`, "content-type": "application/json" }, body: JSON.stringify(body), signal,
+      });
+      const replayPause = { action: "pause", requestId: randomUUID(), expectedRevision: 0, reason: "Retained queue maintenance" };
+      assert.equal((await replayPost(replayPause)).status,200);
+      await waitFor("replay quiescent boundary",async () => (await get("replay"))?.boundary.phase === "paused");
+      const beforeMaintenance = await Promise.all([0,1,2].map(readRows));
+      const globalControl = (action: string) => fetch(routeUrl("control")! + "?action=" + action, { headers: { authorization: `Bearer ${operatorToken}` } });
+      assert.equal((await globalControl("pause")).status,200);
+      await publish(1,98); await publish(2,99);
+      await waitFor("real JSON file backlog",async () => (await fs.readdir(path.join(root,"event_storage"))).filter(n=>n.endsWith(".event")).length >= 2);
+      assert.equal((await globalControl("resume")).status,200);
+      await publish(0,100);
+      await waitFor("real SQLite backlog while replay paused", async () => (await get("targets"))?.targets.reduce((n:number,t:any)=>n+t.queued,0) >= 1);
+      await stopProcess("SIGTERM"); start(); await ready();
+      assert.equal((await get("replay")).paused,true);
+      assert.equal((await get("replay")).revision,1);
+      assert.deepEqual(await Promise.all([0,1,2].map(readRows)),beforeMaintenance);
+      const replayResume = { action: "resume", requestId: randomUUID(), expectedRevision: 1, reason: "Maintenance complete" };
+      const lost = new AbortController();
+      const unread = replayPost(replayResume,lost.signal).catch(()=>null);
+      await waitFor("resume committed before unread reply", async ()=>(await get("replay"))?.revision === 2);
+      lost.abort(); await unread;
+      const duplicate = await replayPost(replayResume);
+      assert.equal(duplicate.status,200); assert.equal(((await duplicate.json()) as any).revision,2);
+      await waitFor("same retained SQLite and file work recovered", async () => (await Promise.all([0,1,2].map(readRows))).every((rows,i)=>rows.length === expected.get(tables[i])!.length));
+      actual = await Promise.all([0,1,2].map(readRows));
+      for(let i=0;i<3;i++) assert.deepEqual(actual[i],expected.get(tables[i]));
+      const replayMaintenance = { retainedAcrossRestart: true, fileAndSqliteQueues: true, lostResumeReply: true, exactContent: true };
+      // Preserve real pending SQLite and JSON work across a same-filesystem store
+      // adoption. Controller/MCP orchestration is exercised independently by its
+      // PostgreSQL integration case; this case tests the actual application adapter.
+      const maintenance=await get("replay");
+      assert.equal((await replayPost({action:"pause",requestId:randomUUID(),expectedRevision:maintenance.revision,reason:"Prepare store adoption"})).status,200);
+      await waitFor("adoption replay boundary",async()=>(await get("replay"))?.boundary.phase === "paused");
+      await publish(1,110);
+      await waitFor("SQLite pending before adoption",async()=>(await get("targets"))?.targets.reduce((n:number,t:any)=>n+t.queued,0)>=1);
+      assert.equal((await globalControl("pause")).status,200);await publish(2,111);
+      await waitFor("JSON pending before adoption",async()=>(await fs.readdir(path.join(root,"event_storage"))).some(n=>n.endsWith(".event")));
+      assert.equal((await globalControl("resume")).status,200);
+      const beforeAdoption=await Promise.all([0,1,2].map(readRows));
+      await stopProcess("SIGTERM");
+      const inode=(await fs.stat(path.join(root,"event_storage"))).ino;
+      const stores=await fs.realpath(await fs.mkdtemp(path.join(tmpdir(),"archiver-stores-")));await fs.chmod(stores,0o700);adoptionRoots.push(stores);
+      const receiver=await fs.realpath(await fs.mkdtemp(path.join(tmpdir(),"archiver-receiver-")));await fs.chmod(receiver,0o700);adoptionRoots.push(receiver);
+      for(const file of ["config.json","package.json"])await fs.copyFile(path.join(root,file),path.join(receiver,file));
+      const operationId=randomUUID(),manifest=readRetainedStoreManifest(repo),plan=prepareRetainedStoreMove(root,stores,operationId,manifest);
+      applyRetainedStoreMove(plan,"adopt");
+      const binding={protocol:1 as const,storeId:plan.storeId,generation:plan.generation,operationId,directory:plan.directory,format:plan.format,configurationDigest:"a".repeat(64),owner:{rttNode:"uns-archiver",version:JSON.parse(await fs.readFile(path.join(repo,"package.json"),"utf8")).version,instanceId:"adoption-target"},maintenance:true as const};
+      writeRetainedStoreBinding(receiver,binding);writeRetainedStoreJson(path.join(plan.directory,"store.json"),binding);writeRetainedStoreJson(path.join(plan.directory,"store-resources.json"),manifest);
+      assert.equal((await fs.stat(path.join(plan.directory,"events"))).ino,inode);
+      start(receiver,"adoption-target");await ready();
+      const accepted=await get("replay");assert.equal(accepted.paused,true);assert.equal(accepted.retainedStore.storeId,plan.storeId);
+      assert.deepEqual(await Promise.all([0,1,2].map(readRows)),beforeAdoption);
+      await publish(1,112);await waitFor("new target input joins same paused store",async()=>(await get("targets"))?.targets.reduce((n:number,t:any)=>n+t.queued,0)>=2);
+      await stopProcess("SIGTERM");start(receiver,"adoption-target");await ready();assert.equal((await get("replay")).revision,accepted.revision);
+      const resumeAdopted={action:"resume",requestId:randomUUID(),expectedRevision:accepted.revision,reason:"Adopted store verified"};
+      // Deliberately ignore one result, then retry the same request.
+      await replayPost(resumeAdopted);const repeatedAdopted=await replayPost(resumeAdopted);assert.equal(repeatedAdopted.status,200);
+      await waitFor("all adopted pending work written",async()=>(await Promise.all([0,1,2].map(readRows))).every((rows,i)=>rows.length===expected.get(tables[i])!.length));
+      await publish(2,113);await waitFor("current owner advances before return",async()=>(await readRows(2)).length===expected.get(tables[2])!.length);
+      await stopProcess("SIGTERM");applyRetainedStoreMove(prepareRetainedStoreReturn(plan),"return");
+      assert.equal((await fs.stat(path.join(root,"event_storage"))).ino,inode);
+      start();await ready();assert.equal((await get("replay")).paused,false);
+      actual=await Promise.all([0,1,2].map(readRows));for(let i=0;i<3;i++)assert.deepEqual(actual[i],expected.get(tables[i]));
+      const storeAdoption={samePhysicalDirectory:true,retainedSqliteAndJson:true,targetStartsPaused:true,restart:true,lostReplyRetry:true,currentDataReturned:true,rowsVerified:actual.flat().length};
       const cooperativeExit = once(child!, "exit");
       child!.send({
         type: "process:msg",
@@ -671,6 +741,9 @@ test(
       assert.equal(child!.exitCode, 0);
       const summary = {
         actualProcess: true,
+        replayMaintenance,
+        storeAdoption,
+        retainedFixtureDirectories:adoptionRoots,
         controllerDiscovery:
           "authenticated scoped fixture, not Controller install",
         auth: "real SDK JWKS",

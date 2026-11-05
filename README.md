@@ -890,3 +890,7 @@ operator JWKS transport failures. A persistent key-service outage remains
 unavailable, and revoked or insufficient caller authority remains denied.
 Only the JWKS lookup can be retried; application operations are not replayed.
 See [the release scope and verification](docs/release-5.2.32.md).
+
+For durable operator pause/resume of all queue replay during same-host
+maintenance, see [Replay maintenance](docs/replay-maintenance.md). This preserves
+the existing SQLite and file queues and uses the declared MCP operator workflow.

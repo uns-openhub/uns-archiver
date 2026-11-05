@@ -596,7 +596,7 @@ export class TargetJournal<T> {
     }
   }
   private async tryHead(target: string, batch = 1): Promise<void> {
-    if (this.closed || this.isPaused(target) || this.storageError) return;
+    if (this.closed || this.isPaused(target) || this.storageError || this.options.canReplay?.() === false) return;
     const rows = this.db
       .prepare(
         "SELECT seq,id,retry_at,bytes FROM queue WHERE target=? AND state='pending' ORDER BY seq LIMIT 1024",
