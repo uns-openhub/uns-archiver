@@ -1,5 +1,20 @@
 export const INGEST_BACKLOG_ALERT_EVENTS = 1_000;
 
+type Inspection = {
+  scanComplete: boolean;
+  processingFiles: number | null;
+  unresolvedProcessingFiles?: number | null;
+  startedAt?: string | null;
+  capturedAt: string | null;
+  lastError: string | null;
+};
+
+const isFresh = (capturedAt: string | null): boolean => {
+  if (!capturedAt) return false;
+  const age = Date.now() - Date.parse(capturedAt);
+  return Number.isFinite(age) && age >= -5_000 && age <= 60_000;
+};
+
 export type IngestHealth = {
   id: "archiver-ingest";
   label: "Archive ingest";
@@ -17,13 +32,8 @@ export type IngestHealth = {
 export function assessIngestHealth(
   storedQueuedLowerBound: number | null,
   checkedAt = new Date().toISOString(),
-  inspection?: {
-    scanComplete: boolean;
-    processingFiles: number | null;
-    unresolvedProcessingFiles?: number | null;
-    capturedAt: string | null;
-    lastError: string | null;
-  },
+  inspection?: Inspection,
+  lastComplete?: (Inspection & { queuedEvents: number | null }) | null,
 ): IngestHealth {
   const base = {
     id: "archiver-ingest" as const,
@@ -73,11 +83,21 @@ export function assessIngestHealth(
 
   if (
     inspection &&
-    (!inspection.scanComplete ||
-      inspection.lastError ||
-      !inspection.capturedAt ||
-      !Number.isFinite(Date.parse(inspection.capturedAt)) ||
-      Date.now() - Date.parse(inspection.capturedAt) > 60_000)
+    (inspection.lastError ||
+      !isFresh(inspection.capturedAt ?? inspection.startedAt ?? null) ||
+      (!inspection.scanComplete &&
+        !(
+          lastComplete?.scanComplete &&
+          !lastComplete.lastError &&
+          isFresh(lastComplete.capturedAt) &&
+          lastComplete.queuedEvents !== null &&
+          lastComplete.queuedEvents < INGEST_BACKLOG_ALERT_EVENTS &&
+          lastComplete.processingFiles !== null &&
+          !(
+            lastComplete.unresolvedProcessingFiles ??
+            lastComplete.processingFiles
+          )
+        )))
   ) {
     return {
       ...base,

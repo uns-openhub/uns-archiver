@@ -135,6 +135,28 @@ test("returns an unknown sample when event storage cannot be scanned", async (t)
   assert.equal(await replay.countQueuedUpTo(3), null);
 });
 
+test("retains only a valid completed inventory during subsequent bounded scans", async (t) => {
+  const directories = await createWorkspace(t);
+  const replay = createReplay(directories, {
+    processEvent: async () => true,
+    scanMaxEntries: 2,
+  });
+  await replay.refreshQueueSnapshot();
+  assert.equal(replay.lastCompletedSnapshot()?.queuedEvents, 0);
+  for (let i = 0; i < 5; i++)
+    await writeEvent(directories.events, `event-${i}`);
+  await replay.refreshQueueSnapshot();
+  assert.equal(replay.snapshot().scanComplete, false);
+  assert.equal(replay.lastCompletedSnapshot()?.queuedEvents, 0);
+  for (let i = 0; i < 10 && !replay.snapshot().scanComplete; i++)
+    await replay.refreshQueueSnapshot();
+  assert.equal(replay.lastCompletedSnapshot()?.queuedEvents, 5);
+  await fs.rename(directories.events, `${directories.events}-moved`);
+  await replay.refreshQueueSnapshot();
+  assert.equal(replay.snapshot().lastError, "stored-replay-count-failed");
+  assert.equal(replay.lastCompletedSnapshot(), null);
+});
+
 test("keeps durable work queued when live headroom is exhausted", async (t) => {
   const directories = await createWorkspace(t);
   let hasHeadroom = false;

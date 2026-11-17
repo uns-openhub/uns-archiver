@@ -702,6 +702,7 @@ async function publishArchiverServiceMetadata() {
     inspection.queuedEvents,
     inspection.capturedAt ?? undefined,
     inspection,
+    storedReplay.lastCompletedSnapshot(),
   );
   latestIngestHealth = ingestHealth;
   const legacyImportHealth = assessLegacyImportHealth(legacyImports.status());
