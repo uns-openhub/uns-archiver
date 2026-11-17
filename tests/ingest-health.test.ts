@@ -84,3 +84,59 @@ test("this replay's known active writer does not degrade a complete small-backlo
     false,
   );
 });
+
+test("a recent completed scan prevents false alerts during the next scan, without hiding problems", () => {
+  const complete = {
+    scanComplete: true,
+    queuedEvents: 0,
+    processingFiles: 0,
+    unresolvedProcessingFiles: 0,
+    capturedAt: new Date().toISOString(),
+    lastError: null as string | null,
+  };
+  const partial = { ...complete, scanComplete: false };
+  const health = (
+    current: typeof partial,
+    previous: typeof complete | null = complete,
+  ) => assessIngestHealth(current.queuedEvents, undefined, current, previous);
+  assert.equal(health(partial).healthy, true);
+  assert.equal(health(partial).inspectionComplete, false);
+  assert.equal(
+    assessIngestHealth(
+      0,
+      undefined,
+      { ...partial, capturedAt: null, startedAt: new Date().toISOString() },
+      complete,
+    ).healthy,
+    true,
+  );
+  assert.equal(health(partial, null).healthy, false);
+  assert.equal(health({ ...partial, queuedEvents: 1_000 }).healthy, false);
+  assert.equal(
+    health({ ...partial, unresolvedProcessingFiles: 1 }).healthy,
+    false,
+  );
+  assert.equal(health({ ...partial, lastError: "scan failed" }).healthy, false);
+  assert.equal(
+    health({
+      ...partial,
+      capturedAt: new Date(Date.now() - 61_000).toISOString(),
+    }).healthy,
+    false,
+  );
+  assert.equal(
+    health(partial, {
+      ...complete,
+      capturedAt: new Date(Date.now() - 61_000).toISOString(),
+    }).healthy,
+    false,
+  );
+  assert.equal(
+    health(partial, { ...complete, queuedEvents: 1_000 }).healthy,
+    false,
+  );
+  assert.equal(
+    health(partial, { ...complete, unresolvedProcessingFiles: 1 }).healthy,
+    false,
+  );
+});

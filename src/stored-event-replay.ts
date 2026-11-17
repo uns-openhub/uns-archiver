@@ -110,6 +110,7 @@ export class StoredEventReplay {
   private readonly inventoryScan: BoundedDirectoryScan;
   private readonly recoveryScan: BoundedDirectoryScan;
   private queueSnapshot: StoredQueueSnapshot = emptyQueueSnapshot();
+  private lastCompletedQueueSnapshot: StoredQueueSnapshot | null = null;
   private recoverySnapshot: ProcessingRecoverySnapshot = {
     scanComplete: false,
     entriesVisited: 0,
@@ -136,6 +137,13 @@ export class StoredEventReplay {
   /** Never opens the filesystem on the caller's HTTP/status path. */
   snapshot(): StoredQueueSnapshot {
     return { ...this.queueSnapshot };
+  }
+
+  /** A completed observation remains available while the next scan runs. */
+  lastCompletedSnapshot(): StoredQueueSnapshot | null {
+    return (
+      this.lastCompletedQueueSnapshot && { ...this.lastCompletedQueueSnapshot }
+    );
   }
 
   /** Schedules recovery and inventory without delaying subscriptions or API registration. */
@@ -306,8 +314,11 @@ export class StoredEventReplay {
       this.queueSnapshot.scanComplete = pass.complete;
       this.queueSnapshot.countKind = pass.complete ? "observed" : "lower-bound";
       this.queueSnapshot.capturedAt = new Date().toISOString();
+      if (pass.complete)
+        this.lastCompletedQueueSnapshot = { ...this.queueSnapshot };
     } catch (error) {
       // Missing/inaccessible storage is not evidence of an empty durable queue.
+      this.lastCompletedQueueSnapshot = null;
       this.queueSnapshot = {
         ...this.queueSnapshot,
         queuedEvents: null,
