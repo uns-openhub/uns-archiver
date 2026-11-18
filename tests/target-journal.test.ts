@@ -80,6 +80,7 @@ test("healthy live writes may finish after source preflight; final and target ch
   const accepted = journal.submit([event("test_live_data", 1)]);
   try {
     await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
     assert.equal(journal.snapshot().targets[0]?.inFlight, 1);
     assert.throws(() => journal.exportPolicy(), /not drained/);
     const state = journal.exportPolicy({ sourcePreflight: true });
@@ -320,6 +321,7 @@ test("pause waits for actual writer completion and closes admission before its r
   try {
     const first = journal.submit([event("test_paused_data", 1)]);
     await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
     const command = pause();
     let acknowledged = false;
     const control = journal.command(command, "operator").then((value) => {
@@ -366,6 +368,7 @@ test("timeout never claims a drained boundary; late writes remain tracked", asyn
   const journal = f.open();
   try {
     const write = journal.submit([event("test_paused_data", 1)]);
+    await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
     const command = pause();
     assert.equal(
@@ -500,6 +503,8 @@ test("concurrent same-table work still fills the shared batch, rather than one r
     const writes = Array.from({ length: 64 }, (_, n) =>
       journal.submit([event("test_busy_data", n)]),
     );
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(pending.length, 64);
@@ -826,6 +831,7 @@ test("retained large payloads respect the in-flight byte budget while other work
     const payload = { value: 1, padding: "x".repeat(60000) };
     const first = journal.submit([{ ...event("test_large_data", 1), payload }]);
     await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
     await journal.submit([{ ...event("test_large_data", 2), payload }]);
     await journal.submit([{ ...event("test_other_data", 3), payload }]);
     assert.ok(journal.snapshot().inFlightBytes < 70000);
@@ -904,7 +910,7 @@ test('concurrent durable stages use shared FULL commits without early publicatio
  }finally{await journal.close();f.clean()}
 });
 
-test('close retains and reopens an admission queued before the first durable microtask',async()=>{
+test('close retains and reopens an admission queued before the first durable turn',async()=>{
  const f=fixture();let journal=f.open();
  const admissions=Array.from({length:257},(_,i)=>journal.submit([event('test_close_admission_data',i)]));
  const closing=journal.close();

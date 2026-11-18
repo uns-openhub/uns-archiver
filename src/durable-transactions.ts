@@ -19,7 +19,7 @@ export class DurableTransactions {
     });
     if (!this.scheduled) {
       this.scheduled = true;
-      queueMicrotask(() => this.flush());
+      setImmediate(() => this.flush());
     }
     return result;
   }
@@ -35,7 +35,7 @@ export class DurableTransactions {
     }
     if (this.pending.length && !this.scheduled) {
       this.scheduled = true;
-      queueMicrotask(() => this.flush());
+      setImmediate(() => this.flush());
     }
   }
 
