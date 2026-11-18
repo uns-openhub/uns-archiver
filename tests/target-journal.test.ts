@@ -319,7 +319,7 @@ test("pause waits for actual writer completion and closes admission before its r
   const journal = f.open();
   try {
     const first = journal.submit([event("test_paused_data", 1)]);
-    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
     const command = pause();
     let acknowledged = false;
     const control = journal.command(command, "operator").then((value) => {
@@ -366,7 +366,7 @@ test("timeout never claims a drained boundary; late writes remain tracked", asyn
   const journal = f.open();
   try {
     const write = journal.submit([event("test_paused_data", 1)]);
-    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
     const command = pause();
     assert.equal(
       ((await journal.command(command, "operator", 2)) as any).boundary.phase,
@@ -500,8 +500,8 @@ test("concurrent same-table work still fills the shared batch, rather than one r
     const writes = Array.from({ length: 64 }, (_, n) =>
       journal.submit([event("test_busy_data", n)]),
     );
-    await Promise.resolve();
-    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
     assert.equal(pending.length, 64);
     assert.equal(journal.snapshot().targets[0].inFlight, 64);
     pending.forEach((resolve) => resolve());
@@ -825,7 +825,7 @@ test("retained large payloads respect the in-flight byte budget while other work
   try {
     const payload = { value: 1, padding: "x".repeat(60000) };
     const first = journal.submit([{ ...event("test_large_data", 1), payload }]);
-    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
     await journal.submit([{ ...event("test_large_data", 2), payload }]);
     await journal.submit([{ ...event("test_other_data", 3), payload }]);
     assert.ok(journal.snapshot().inFlightBytes < 70000);
@@ -882,4 +882,48 @@ test("only active pauses retain the host migration policy file; SQLite keeps unp
     await journal.close();
     f.clean();
   }
+});
+
+test('concurrent durable stages use shared FULL commits without early publication or acknowledgement', async()=>{
+ const f=fixture();const journal=f.open();let commits=0;
+ const db=(journal as any).db as DatabaseSync;const exec=db.exec.bind(db);
+ db.exec=(sql:string)=>{if(sql==='COMMIT')commits++;return exec(sql)};
+ const entries=Array.from({length:256},(_,i)=>event('test_durable_batch_data',i));
+ try{
+  const writes=entries.map(e=>journal.submit([e]));
+  assert.equal(f.rows.length,0);
+  assert.throws(()=>journal.exportPolicy({sourcePreflight:true}),/not drained/);
+  const results=await Promise.all(writes);
+  assert.ok(results.every(Boolean));assert.equal(f.rows.length,256);
+  await Promise.all(entries.map(e=>journal.acknowledge([e.id])));
+  assert.equal(Number(db.prepare('SELECT count(*) n FROM queue').get()!.n),0);
+  // Admission, in-write markers, confirmations and acknowledgements stay FULL
+  // durable, but share commits across the concurrently admitted cohort.
+  assert.ok(commits<=16,`expected bounded group commits, observed ${commits}`);
+  assert.equal(db.prepare('PRAGMA synchronous').get()!.synchronous,2);
+ }finally{await journal.close();f.clean()}
+});
+
+test('close retains and reopens an admission queued before the first durable microtask',async()=>{
+ const f=fixture();let journal=f.open();
+ const admissions=Array.from({length:257},(_,i)=>journal.submit([event('test_close_admission_data',i)]));
+ const closing=journal.close();
+ await Promise.all([...admissions,closing]);
+ journal=f.open();try{
+  assert.equal(journal.snapshot().targets[0].queued,257);
+  await drain(journal);assert.equal(f.rows.length,257);
+ }finally{await journal.close();f.clean()}
+});
+
+test('a failed grouped admission retains earlier work and never publishes rolled-back rows',async()=>{
+ const f=fixture({canReplay:()=>false});let journal=f.open();
+ await journal.submit([event('test_before_failure_data',0)]);
+ const db=(journal as any).db as DatabaseSync;const exec=db.exec.bind(db);let fail=true;
+ db.exec=(sql:string)=>{if(sql==='COMMIT'&&fail){fail=false;throw Error('disk failure')}return exec(sql)};
+ try{
+  const results=await Promise.allSettled([journal.submit([event('test_failed_batch_data',1)]),journal.submit([event('test_failed_batch_data',2)])]);
+  assert.ok(results.every(r=>r.status==='rejected'));assert.equal(f.rows.length,0);
+  assert.equal(Number(db.prepare('SELECT count(*) n FROM queue').get()!.n),1);
+ }finally{await journal.close()}
+ journal=f.open();try{assert.equal(journal.snapshot().targets[0].queued,1)}finally{await journal.close();f.clean()}
 });

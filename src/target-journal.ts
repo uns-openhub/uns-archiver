@@ -16,6 +16,7 @@ import {
 import path from "node:path";
 import { z } from "zod";
 import { TopicMatcher } from "./topic-matcher.js";
+import { DurableTransactions } from "./durable-transactions.js";
 
 const table = z
   .string()
@@ -127,6 +128,7 @@ export class TargetJournal<T> {
   private policy: Policy = { protocol: 1, revision: 0, rules: [] };
   private readonly active = new Map<string, Set<Promise<void>>>();
   private readonly jobs = new Map<string, Promise<void>>();
+  private readonly submissions = new Set<Promise<void>>();
   private replaying?: Promise<void>;
   private closing?: Promise<void>;
   private closed = false;
@@ -140,6 +142,7 @@ export class TargetJournal<T> {
   private readonly reserveBytes: number;
   private readonly maxPendingPerTarget: number;
   private activeBytes = 0;
+  private readonly durable = new DurableTransactions((work) => this.transaction(work));
 
   constructor(
     private readonly options: {
@@ -377,6 +380,7 @@ export class TargetJournal<T> {
     // retries, queued work or uncertain outcomes through this preliminary check.
     return (
       !!this.storageError ||
+      this.durable.size > 0 ||
       (!sourcePreflight && this.jobs.size > 0) ||
       !!this.db
         .prepare(
@@ -501,9 +505,17 @@ export class TargetJournal<T> {
   /** Atomic admission of all packet parts. Different equal MQTT occurrences need different IDs. */
   async submit(entries: JournalEntry<T>[]): Promise<boolean> {
     if (this.closed) throw new Error("Journal closed");
+    let finish!: () => void;
+    const completion = new Promise<void>((resolve) => { finish = resolve; });
+    this.submissions.add(completion);
+    try { return await this.submitEntries(entries); }
+    finally { this.submissions.delete(completion); finish(); }
+  }
+
+  private async submitEntries(entries: JournalEntry<T>[]): Promise<boolean> {
     try {
       const before = JSON.stringify(this.policy);
-      this.transaction(() => {
+      await this.durable.run(() => {
         for (const entry of entries) {
           table.parse(entry.table);
           if (entry.id.length > 200 || !entry.id || entry.topic.length > 4096)
@@ -574,14 +586,17 @@ export class TargetJournal<T> {
   }
 
   /** Receipts survive until the original live/stored/legacy envelope is acknowledged. */
-  acknowledge(ids: string[]) {
+  async acknowledge(ids: string[]) {
+    // Closing may retain a confirmed receipt for bounded cleanup on reopen.
+    if (this.closed) return;
     try {
-      for (const id of ids)
-        this.db
+      await this.durable.run(() => {
+        for (const id of ids) this.db
           .prepare(
             "DELETE FROM queue WHERE id=? AND state='confirmed' AND legacy_key IS NULL",
           )
           .run(id);
+      });
     } catch (error) {
       this.fault(error);
     }
@@ -630,9 +645,9 @@ export class TargetJournal<T> {
     const running = Promise.resolve()
       .then(async () => {
         try {
-          this.db
+          await this.durable.run(() => this.db
             .prepare("UPDATE queue SET in_write=1 WHERE seq=?")
-            .run(row.seq);
+            .run(row.seq));
         } catch (error) {
           this.fault(error);
         }
@@ -650,7 +665,7 @@ export class TargetJournal<T> {
               30000,
               (this.options.retryMs ?? 1000) * 2 ** Math.min(row.attempts, 5),
             );
-            this.transaction(() => {
+            await this.durable.run(() => {
               this.db
                 .prepare(
                   "UPDATE queue SET attempts=attempts+1,retry_at=?,in_write=0 WHERE seq=?",
@@ -668,7 +683,7 @@ export class TargetJournal<T> {
           return;
         }
         try {
-          this.transaction(() => {
+          await this.durable.run(() => {
             this.db
               .prepare(
                 "UPDATE totals SET pending=pending-1,bytes=bytes-(SELECT bytes FROM queue WHERE seq=?),retrying=retrying-? WHERE target=?",
@@ -956,7 +971,10 @@ export class TargetJournal<T> {
     this.closed = true;
     clearInterval(this.timer);
     await this.replaying;
+    await this.durable.drain().catch(() => {});
+    await Promise.allSettled([...this.submissions]);
     await Promise.allSettled([...this.jobs.values()]);
+    await this.durable.drain().catch(() => {});
     this.closedDrained = !this.db
       .prepare("SELECT 1 FROM queue WHERE state='pending' LIMIT 1")
       .get();

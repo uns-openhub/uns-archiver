@@ -1,13 +1,18 @@
 import path from "node:path";
 import { TargetJournal } from "../../src/target-journal.js";
 const root = process.argv[2];
+let started!: () => void;
+const writeStarted = new Promise<void>((resolve) => { started = resolve; });
 const journal = new TargetJournal({
   directory: path.join(root, "journal"),
   policyFile: path.join(root, "policy.json"),
   reserveBytes: 0,
   retryMs: 1,
   write: async (entry) => {
-    if (entry.id === "unknown-write") await new Promise<void>(() => {});
+    if (entry.id === "unknown-write") {
+      started();
+      await new Promise<void>(() => {});
+    }
     throw new Error("Database unavailable");
   },
 });
@@ -40,7 +45,7 @@ void journal.submit([
     payload: { value: 12 },
   },
 ]);
-await Promise.resolve();
+await writeStarted;
 await journal.command(
   {
     action: "pause",
