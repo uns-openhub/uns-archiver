@@ -34,6 +34,14 @@ test(
     if (databaseContainer)
       assert.match(databaseContainer, /^openhub-archiver-e2e-qdb-\d{8}$/);
     await fs.access(path.join(repo, "dist/index.js"));
+    const sourceRepo = process.env.ARCHIVER_TEST_SOURCE_PACKAGE
+      ? await fs.realpath(process.env.ARCHIVER_TEST_SOURCE_PACKAGE)
+      : repo;
+    if (sourceRepo !== repo) assert.match(sourceRepo, /^\/(?:private\/)?tmp\//);
+    await fs.access(path.join(sourceRepo,"dist/index.js"));
+    const sourcePackage=JSON.parse(await fs.readFile(path.join(sourceRepo,"package.json"),"utf8"));
+    const targetPackage=JSON.parse(await fs.readFile(path.join(repo,"package.json"),"utf8"));
+    assert.equal(sourcePackage.name,"uns-archiver");assert.equal(targetPackage.name,"uns-archiver");
     const root = await fs.realpath(
       await fs.mkdtemp(path.join(tmpdir(), "archiver-process-")),
     );
@@ -237,7 +245,7 @@ test(
     });
     await fs.writeFile(
       path.join(root, "package.json"),
-      await fs.readFile(path.join(repo, "package.json")),
+      await fs.readFile(path.join(sourceRepo, "package.json")),
     );
     await fs.writeFile(path.join(root, "service-token"), serviceToken, {
       mode: 0o600,
@@ -273,7 +281,8 @@ test(
         { mode: 0o600 },
       );
       logStreams.push(stream);
-      child = spawn(process.execPath, [path.join(repo, "dist/index.js")], {
+      const selectedRepo=workingDirectory===root?sourceRepo:repo;
+      child = spawn(process.execPath, [path.join(selectedRepo, "dist/index.js")], {
         cwd: workingDirectory,
         env: {
           PATH: process.env.PATH,
@@ -701,6 +710,7 @@ test(
       const stores=await fs.realpath(await fs.mkdtemp(path.join(tmpdir(),"archiver-stores-")));await fs.chmod(stores,0o700);adoptionRoots.push(stores);
       const receiver=await fs.realpath(await fs.mkdtemp(path.join(tmpdir(),"archiver-receiver-")));await fs.chmod(receiver,0o700);adoptionRoots.push(receiver);
       for(const file of ["config.json","package.json"])await fs.copyFile(path.join(root,file),path.join(receiver,file));
+      await fs.copyFile(path.join(repo,"package.json"),path.join(receiver,"package.json"));
       const operationId=randomUUID(),manifest=readRetainedStoreManifest(repo),plan=prepareRetainedStoreMove(root,stores,operationId,manifest);
       applyRetainedStoreMove(plan,"adopt");
       const binding={protocol:1 as const,storeId:plan.storeId,generation:plan.generation,operationId,directory:plan.directory,format:plan.format,configurationDigest:"a".repeat(64),owner:{rttNode:"uns-archiver",version:JSON.parse(await fs.readFile(path.join(repo,"package.json"),"utf8")).version,instanceId:"adoption-target"},maintenance:true as const};
@@ -741,6 +751,8 @@ test(
       assert.equal(child!.exitCode, 0);
       const summary = {
         actualProcess: true,
+        sourceVersion:sourcePackage.version,
+        targetVersion:targetPackage.version,
         replayMaintenance,
         storeAdoption,
         retainedFixtureDirectories:adoptionRoots,
