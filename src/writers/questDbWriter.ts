@@ -255,7 +255,7 @@ export class QuestDBWriter {
     const written = await this.targetJournal.submit(entries);
     if (writeOptions?.legacyKey && !written) throw new TargetWriteDeferred("Target retained until pause/database recovery");
     // Legacy receipts are removed only after LegacyImportManager deletes its original file.
-    if (!writeOptions?.legacyKey) this.targetJournal.acknowledge(entries.map(entry => entry.id));
+    if (!writeOptions?.legacyKey) await this.targetJournal.acknowledge(entries.map(entry => entry.id));
   }
 
   private async writeUnsPacketDirect(

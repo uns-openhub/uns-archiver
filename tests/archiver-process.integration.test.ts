@@ -272,6 +272,7 @@ test(
     let launchId = "";
     let passiveChild: ReturnType<typeof spawn> | undefined;
     const logStreams: ReturnType<typeof createWriteStream>[] = [];
+    const boot = (entry: string) => [fileURLToPath(new URL("fixtures/archiver-process-bootstrap.mjs", import.meta.url)), entry];
     const start = (workingDirectory=root,instanceId?:string) => {
       generation++;
       launchId = randomUUID();
@@ -282,7 +283,7 @@ test(
       );
       logStreams.push(stream);
       const selectedRepo=workingDirectory===root?sourceRepo:repo;
-      child = spawn(process.execPath, [path.join(selectedRepo, "dist/index.js")], {
+      child = spawn(process.execPath, boot(path.join(selectedRepo, "dist/index.js")), {
         cwd: workingDirectory,
         env: {
           PATH: process.env.PATH,
@@ -336,6 +337,8 @@ test(
       return result.json() as Promise<any>;
     };
     const ready = async () => {
+      await waitFor("application bootstrap complete", async () =>
+        (await fs.readFile(path.join(root, `archiver-${generation}.log`), "utf8").catch(() => "")).includes("archiver-fixture-booted"));
       await waitFor(
         "registered target and topics routes",
         () =>
@@ -449,7 +452,7 @@ test(
       logStreams.push(stream);
       passiveChild = spawn(
         process.execPath,
-        [path.join(repo, "dist/index.js")],
+        boot(path.join(repo, "dist/index.js")),
         {
           cwd: passiveRoot,
           env: {
@@ -466,6 +469,7 @@ test(
       passiveChild.once("close", () => stream.end());
       const passivePort = await waitFor("passive API listening", async () => {
         const text = await fs.readFile(passiveLog, "utf8");
+        if (!text.includes("archiver-fixture-booted")) return false;
         return (
           [
             ...text.matchAll(/API listening on http:\/\/[^:\s]+:(\d+)\/api/g),
@@ -803,7 +807,7 @@ test(
       }
       if (databaseStopped && databaseContainer)
         await run("podman", ["start", databaseContainer]);
-      await client.endAsync();
+      await client.endAsync(true);
       for (const server of [gateway, discovery])
         await new Promise<void>((resolve) => {
           server.close(() => resolve());

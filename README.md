@@ -115,6 +115,19 @@ never starts while the live queue has consumed its 25% reserve.
 
 ### Responsive spool status and recovery
 
+Concurrent target-journal operations share bounded SQLite transactions (up to
+128 operations per commit). Admission, write-start markers, confirmations and
+live receipt cleanup remain `synchronous=FULL`: no operation is acknowledged
+before its transaction commits. This avoids several separate disk flushes per
+sample during sustained traffic. Pause and shutdown still wait for admitted work;
+an interrupted or failed commit is retained or rejected for retry, never reported
+as a completed write. Existing journal files and retained-store formats are
+unchanged.
+
+The local regression benchmark uses real isolated SQLite files with a synthetic
+downstream writer. It measures transaction overhead, not QuestDB or production
+throughput. The separate integration checks cover database readback and recovery.
+
 MQTT startup and control responses do not wait for a full directory count or
 orphan recovery. Inventory and stale `.processing` recovery run in the background;
 replay, inventory and recovery each retain their own streaming directory cursor
