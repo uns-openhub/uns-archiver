@@ -106,6 +106,19 @@ export class BoundedIngestQueue<T> {
     };
   }
 
+  /** Move only waiting work to disk. Active writes retain their original
+   * receipt path, so a clean cutover does not submit an occurrence twice. */
+  persistWaiting(persist: (item: BoundedIngestQueueItem<T>) => void): void {
+    while (this.queued.length) {
+      const item = this.queued[0]!;
+      persist(item);
+      this.queued.shift();
+      this.pendingIds.delete(item.id);
+      this.pendingBytes -= item.bytes;
+    }
+    this.notifyIdleWaiters();
+  }
+
   async waitForIdle(): Promise<void> {
     if (this.isIdle()) return;
     await new Promise<void>((resolve) => this.idleWaiters.add(resolve));

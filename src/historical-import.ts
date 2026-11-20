@@ -257,6 +257,14 @@ export class HistoricalImport {
     return this.inFlight ? 1 : 0;
   }
 
+  queuedHandoverWork() {
+    if (this.faulted || this.stopped) return { pending: null, inFlight: null };
+    return {
+      pending: Number(this.db.prepare("SELECT COUNT(*) AS pending FROM imports WHERE state <> 'completed'").get()?.pending ?? 0),
+      inFlight: Number(!!this.inFlight) + Number(this.startPending),
+    };
+  }
+
   assertHandoverReady() {
     if (this.faulted || this.startPending || this.active())
       throw new Error(

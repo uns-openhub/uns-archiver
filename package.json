@@ -22,11 +22,16 @@
     },
     "mqttHandover": {
       "protocolVersion": 2
+    },
+    "queuedHandover": {
+      "protocolVersion": 1,
+      "inputBoundary": "mqtt-qos0-gap-v1"
     }
   },
   "type": "module",
   "scripts": {
     "test": "tsx --test --test-concurrency=1 tests/**/*.test.ts",
+    "test:retained-store-configuration": "node --import tsx --test tests/retained-store-configuration.candidate.ts",
     "typecheck": "tsc --noEmit",
     "clean": "rimraf dist",
     "build": "pnpm run clean && tsc -p tsconfig.json",
@@ -40,8 +45,8 @@
   },
   "dependencies": {
     "@questdb/nodejs-client": "^4.2.0",
-    "@uns-kit/api": "3.0.46",
-    "@uns-kit/core": "3.0.46",
+    "@uns-kit/api": "3.0.56",
+    "@uns-kit/core": "3.0.56",
     "dotenv": "^17.4.2",
     "graphql": "^17.0.2",
     "graphql-request": "^7.4.0",
