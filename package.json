@@ -22,11 +22,16 @@
     },
     "mqttHandover": {
       "protocolVersion": 2
+    },
+    "queuedHandover": {
+      "protocolVersion": 1,
+      "inputBoundary": "mqtt-qos0-gap-v1"
     }
   },
   "type": "module",
   "scripts": {
     "test": "tsx --test --test-concurrency=1 tests/**/*.test.ts",
+    "test:retained-store-configuration": "node --import tsx --test tests/retained-store-configuration.candidate.ts",
     "typecheck": "tsc --noEmit",
     "clean": "rimraf dist",
     "build": "pnpm run clean && tsc -p tsconfig.json",

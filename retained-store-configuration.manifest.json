@@ -1,0 +1,12 @@
+{
+  "protocol": 1,
+  "activation": "stopped",
+  "fields": [
+    {
+      "path": ["logging", "level"],
+      "kind": "enum",
+      "values": ["warn", "info"],
+      "dependencies": [["logging", "host"], ["questdb", "dataStorage"]]
+    }
+  ]
+}

@@ -429,6 +429,20 @@ archived. These values should be measured before increasing them.
 `config.json`, `.env`, the event queue, and active-topic cache are intentionally
 ignored by Git.
 
+### Configuration review with a retained queue
+
+The stopped-owner declaration permits an existing `logging.level` to switch
+between `warn` and `info`. The logger reads the threshold at startup. The
+configured logging host and the archive policy must remain the same. A
+compatible Controller can review the change after a confirmed stop and apply
+it for the next start. This declaration supports stopped activation only.
+
+Changes to topic filters, rule order, groups, destinations or ingest modes are
+outside this declaration. Live ingest, stored-event replay and legacy import
+select the current storage rule and per-kind ingest mode. Removing even a
+redundant group override changes the full storage policy digest used to resume
+an existing legacy import.
+
 ## Development
 
 ```bash
@@ -436,6 +450,39 @@ pnpm run verify
 ```
 
 This runs the unit tests, TypeScript typecheck, and clean production build.
+
+Run `pnpm run test:retained-store-configuration` with
+`UNS_RETAINED_CONFIGURATION_SDK_MODULE` set to the absolute path of the built
+candidate SDK's `dist/runtime/retained-store.js` to verify the declaration with
+its host-side reviewer during SDK development.
+
+The retained configuration canary also exercises the Controller host against
+a local Archiver tarball and a real Archiver restart. Install both checkouts'
+dependencies, link the built candidate `@uns-kit/core` in the Controller
+checkout, and make Mosquitto available on `PATH` or set `MOSQUITTO_BIN`.
+Run from the Archiver checkout with an absolute Controller checkout path.
+
+```bash
+archiver_checkout="$PWD"
+controller_checkout=/absolute/path/to/controller-checkout
+pack_dir="$(mktemp -d)"
+pnpm run build
+pnpm pack --pack-destination "$pack_dir"
+cd "$controller_checkout"
+node --import tsx "$archiver_checkout/scripts/accept-retained-configuration.mjs" \
+  "$controller_checkout" "$pack_dir"/uns-archiver-*.tgz
+```
+
+The canary uses the packed declaration and schema, the compiled Archiver,
+the Controller configuration transaction, SDK storage leases, and a local
+Mosquitto broker. It checks a clean stop, the new startup log threshold,
+both binding copies, a refused group removal, and an unchanged pending file
+through apply and restart. It resumes replay through Archiver's replay control
+and checks the marked line at a fixture ILP endpoint. The canary supplies
+Controller process inventory, authority, provenance, and outer lock adapters,
+plus a local GraphQL discovery fixture. The ILP response tests client delivery
+and acknowledgement. The canary leaves logs and `acceptance.json` in its
+printed temporary directory.
 
 Additional scripts:
 
@@ -491,6 +538,59 @@ These changes do not repair an older running source retroactively. Upgrade it
 through the existing reviewed lifecycle before relying on the new capability.
 Confirm actual source exit before resuming import from its old spool. Database
 commit acknowledgement loss can still produce append duplicates.
+
+### Queued handover with an accepted MQTT gap
+
+Archiver advertises queued-handover protocol 1 with the corresponding
+SDK and an attached retained store. Older SDKs keep the existing
+lifecycle. The report has independent counts for live
+ingestion, events awaiting topic metadata, file replay, target journal and
+durable transactions, legacy and historical imports, and QuestDB batches.
+Counts from different stages can describe the same packet. A partial file scan
+reports the positive lower bound seen during its inspection window, with its
+capture time. A partial scan with zero matches, stale evidence and an
+unconfirmed legacy import report an unknown count.
+
+The MQTT input subscribes at QoS 0. Review and explicitly accept the
+`mqtt-qos0-gap-v1` boundary in Controller for each cutover. Messages published
+between source closure and target subscription acknowledgement can be lost.
+The broker has no replay cursor for this input, so the elapsed gap is
+measurable but the number of missed messages is unknown.
+
+The source persists waiting input and lets its live handlers finish their
+existing journal work before confirming closure. The independently prepared target durably captures input
+after its broker subscription is acknowledged. Its writes, replay and imports
+remain held until the source has drained with its prior configuration and
+Controller has confirmed source exit. Sealed legacy directories and reviewed
+finite historical imports report their own work independently. Normal
+steady-state input retains its existing buffering behavior, so a source
+crash before the durable closure receipt can still lose work held in memory.
+Uncertain QuestDB append acknowledgements can still produce duplicates on
+retry. A capture storage failure blocks a clean handover receipt.
+
+Use independent stores, generated MQTT client IDs, and clean MQTT sessions
+without expiry. After release, a verified empty target's automatic initial
+adoption pause is lifted. Existing operator pauses and pauses on previously
+used stores still require the usual operator workflow.
+
+To exercise separate Archiver file and target queues against a disposable
+loopback QuestDB, including a held receiver reopened before release:
+
+```bash
+ARCHIVER_TEST_QUESTDB=http://127.0.0.1:19000 node --import tsx --test tests/archiver-queued-handover.test.ts
+```
+
+This local drill uses the Archiver spool, replay, journal and ILP writer.
+Its synthetic admission boundary isolates queue and write ordering from
+MQTT and Controller orchestration.
+
+The built-process drill uses a compatible local SDK, a disposable loopback
+MQTT broker, and an isolated loopback QuestDB. Build Archiver first and run:
+
+```bash
+ARCHIVER_TEST_MQTT=mqtt://127.0.0.1:18883 ARCHIVER_TEST_QUESTDB=http://127.0.0.1:19000 \
+  node --import tsx --test tests/archiver-qos0-handover.integration.test.ts
+```
 
 ### Operator import status
 

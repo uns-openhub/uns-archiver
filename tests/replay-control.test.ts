@@ -155,3 +155,29 @@ test("a retained-store binding starts paused once, and a later operator resume s
  const root=mkdtempSync(path.join(tmpdir(),"archiver-adopt-pause-"));
  try {const file=path.join(root,"control.json"),operationId=randomUUID();let c=new ReplayControl(file,()=>0);c.ensureMaintenancePause(operationId);assert.equal(c.snapshot().paused,true);assert.equal(c.snapshot().revision,1);c=new ReplayControl(file,()=>0);c.ensureMaintenancePause(operationId);assert.equal(c.snapshot().revision,1);c.command(command("resume",1),"operator");c=new ReplayControl(file,()=>0);c.ensureMaintenancePause(operationId);assert.equal(c.snapshot().paused,false);assert.equal(c.snapshot().revision,2)}finally{rmSync(root,{recursive:true,force:true})}
 });
+
+test("queued activation only resumes the matching first automatic adoption pause", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "archiver-adopt-queued-"));
+  try {
+    const adoption = randomUUID();
+    const file = path.join(root, "fresh.json");
+    const fresh = new ReplayControl(file, () => 0);
+    fresh.ensureMaintenancePause(adoption);
+    assert.equal(fresh.resumeInitialMaintenancePause(randomUUID()), false);
+    assert.equal(fresh.resumeInitialMaintenancePause(adoption), true);
+    const reopened = new ReplayControl(file, () => 0);
+    assert.equal(reopened.resumeInitialMaintenancePause(adoption), false);
+    assert.equal(reopened.paused, false);
+    reopened.command(command("pause", 2), "operator");
+    assert.equal(reopened.resumeInitialMaintenancePause(adoption), false);
+    assert.equal(reopened.paused, true);
+
+    const used = new ReplayControl(path.join(root, "used.json"), () => 0);
+    used.command(command("pause", 0), "operator");
+    used.ensureMaintenancePause(adoption);
+    assert.equal(used.resumeInitialMaintenancePause(adoption), false);
+    assert.equal(used.paused, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -1,15 +1,16 @@
-import { existsSync } from "node:fs";
+import { existsSync, statfsSync } from "node:fs";
 import { HistoricalImport } from "./historical-import.js";
 import { historicalImportApi, historicalImportOpenApiSchema, historicalImportOperations, historicalImportStatusOperations } from "./historical-import-api.js";
 import { historicalPrefixesOverlap, ImportError, type HistoricalImportSettings, type ImportMapping, type ImportProfile } from "./historical-import-source.js";
 import { deriveQuestDbTopicIdentity } from "./writers/questdb-identity.js";
 import {realpathSync as realpathSyncForStore} from "node:fs";
-import {openRetainedStoreLease, readRetainedStoreManifest, readRetainedStoreJson, resolveRetainedStoreResources} from "@uns-kit/core/runtime/retained-store.js";
+import {openRetainedStoreLease, readRetainedStoreManifest, readRetainedStoreJson, resolveRetainedStoreResources, retainedStoreEntry, type RetainedStoreManifest, type StoreBinding} from "@uns-kit/core/runtime/retained-store.js";
 import {fileURLToPath} from "node:url";
 import { ReplayControl, replayControlApi, replayStatusOperations, replayCommandOperations, replayCommandOpenApiSchema } from "./replay-control.js";
 import { occurrenceId, persistEventFile } from "./durable-event-file.js";
 import { targetControlApi, targetCommandOpenApiSchema, targetStatusOperatorOperations, targetControlOperatorOperations } from "./target-control-api.js";
 import { assertStoredQueueDrainedForHandover, createArchiverHandoverState } from "./archiver-handover-state.js";
+import { ArchiverHandoverEffects, drainArchiverHandoverWork, observeArchiverQueues, type ArchiverQueueObservation } from "./archiver-queued-handover.js";
 import { TargetStorageError } from "./target-journal.js";
 import { archiveInputReadiness } from "./archive-input-readiness.js";
 import { assessArchiveWriteHealth } from './archive-write-health.js';
@@ -89,11 +90,72 @@ let pkgInfo: { name: string; version: string } | null = null;
 let verifiedManagedIdentity: { controllerName: string; instanceId: string } | null = null;
 
 
+// An unpublished SDK can be tested alongside the supported registry version
+// without teaching an older runtime to ignore a managed launch fence.
+type QueuedGapProxy = UnsMqttProxy & {
+  setInputHandler(handler: (event: { topic: string; message: string }) => Promise<void>): void;
+  closeQueuedHandoverQos0Input(): Promise<{ closedAt: number }>;
+  openQueuedHandoverQos0Input(): Promise<{ openedAt: number }>;
+};
+type QueuedGapAdapter = {
+  observeApplication(): ArchiverQueueObservation[];
+  queueIdentity?: () => string;
+  inputBoundary?: {
+    kind: "mqtt-qos0-gap-v1";
+    quiesceSource(): Promise<{ closedAt: number }>;
+    openTarget(): Promise<{ openedAt: number }>;
+  };
+  recoverSourceInput?: (checkpoint: string) => Promise<string>;
+  drainApplication?: () => Promise<void>;
+  assertTargetEffectsHeld?: () => void;
+  assertTargetReleaseReady?: () => void;
+  releaseTargetEffects?: () => Promise<void>;
+  targetCapacityAvailable?: () => boolean;
+};
+type GapSdk = {
+  QUEUED_HANDOVER_STATE: string;
+  queuedHandoverTargetLaunch(): { acceptedInputLoss?: true } | undefined;
+  queuedHandoverSourceRecoveryLaunch(): object | undefined;
+  readQueuedHandoverState(directory: string): {
+    role: string; pending: string | null; evidence: readonly { phase: string }[];
+  } | undefined;
+  queuedHandoverRetainedStoreIdentity(binding: StoreBinding): string;
+};
 const retainedPackageRoot=path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const instanceDirectory = realpathSyncForStore(path.resolve("."));
 const retainedPackage=readRetainedStoreJson(path.join(retainedPackageRoot,"package.json")) as {name:string;version:string};
-const retainedStore = resolveRetainedStoreResources(realpathSyncForStore(path.resolve(".")),
-  readRetainedStoreManifest(retainedPackageRoot), {rttNode:retainedPackage.name,version:process.env.version ?? retainedPackage.version,...(process.env.RTT_INSTANCE_ID ? {instanceId:process.env.RTT_INSTANCE_ID} : {})});
+const retainedManifest = readRetainedStoreManifest(retainedPackageRoot);
+const retainedStore = resolveRetainedStoreResources(instanceDirectory, retainedManifest,
+  {rttNode:retainedPackage.name,version:process.env.version ?? retainedPackage.version,...(process.env.RTT_INSTANCE_ID ? {instanceId:process.env.RTT_INSTANCE_ID} : {})});
+const queuedSdkModule: string = "@uns-kit/core/runtime/queued-handover.js";
+const queuedSdk = await import(queuedSdkModule).catch(() => null) as GapSdk | null;
+const queuedProxy = UnsMqttProxy.prototype as Partial<QueuedGapProxy>;
+const queuedGapSupported = !!queuedSdk?.queuedHandoverRetainedStoreIdentity &&
+  typeof queuedProxy.closeQueuedHandoverQos0Input === "function" && typeof queuedProxy.openQueuedHandoverQos0Input === "function" &&
+  typeof queuedProxy.setInputHandler === "function";
+const queuedLaunchRequested = Boolean(process.env.UNS_QUEUED_HANDOVER_ROLE || process.env.UNS_QUEUED_HANDOVER_BINDING ||
+  process.env.UNS_QUEUED_HANDOVER_RECOVERY);
+const priorQueuedLedger = path.join(instanceDirectory, queuedSdk?.QUEUED_HANDOVER_STATE ?? "queued-handover-state.json");
+if ((queuedLaunchRequested || retainedStoreEntry(priorQueuedLedger)) && (!queuedGapSupported || !retainedStore.binding))
+  throw Error("Archiver MQTT does not support queued handover target activation with this SDK or store.");
+const queuedTarget = queuedGapSupported ? queuedSdk?.queuedHandoverTargetLaunch() : undefined;
+const queuedRecovery = queuedGapSupported ? queuedSdk?.queuedHandoverSourceRecoveryLaunch() : undefined;
+if (queuedTarget && !queuedTarget.acceptedInputLoss) throw Error("Archive MQTT handover requires accepted QoS 0 input loss.");
+const priorQueued = queuedGapSupported ? queuedSdk?.readQueuedHandoverState(instanceDirectory) : undefined;
+if (!queuedTarget && !queuedRecovery && priorQueued &&
+  (priorQueued.pending || priorQueued.role !== "target" || priorQueued.evidence.at(-1)?.phase !== "target-released"))
+  throw Error("Previous queued handover still fences this Archiver launch.");
+const queuedHandoverEffects = new ArchiverHandoverEffects(!!queuedTarget);
+let queuedSourceClosing = !!queuedRecovery;
+let queuedSourceClosed = false;
+let queuedAcceptanceFailed = false;
+let queuedActivationAcknowledged = false;
 const retainedLease=retainedStore.binding ? openRetainedStoreLease(retainedStore.binding) : undefined;
+const freshStoreSdk = await import("@uns-kit/core/runtime/retained-store.js") as {
+  isFreshRetainedStore?: (binding: StoreBinding, manifest: RetainedStoreManifest) => boolean;
+};
+const verifiedFreshStore = Boolean(queuedTarget && retainedStore.binding &&
+  freshStoreSdk.isFreshRetainedStore?.(retainedStore.binding, retainedManifest));
 const EVENT_STORAGE_DIR = retainedStore.resources.events!;
 const EVENT_FILE_EXTENSION = ".event";
 const EVENT_PROCESSING_EXTENSION = ".processing";
@@ -191,6 +253,12 @@ function resolveIngestMode(storage: any, unsPacket: any): IngestMode {
 }
 
 let config = await ConfigFile.loadConfig();
+const queuedMqttChannelsCompatible = [resolveMqttChannel(config.infra), resolveMqttChannel(config.infra, config.input)]
+  .every(channel => !channel.clientId && channel.clean !== false && (channel.properties?.sessionExpiryInterval ?? 0) === 0);
+if (queuedLaunchRequested && !queuedMqttChannelsCompatible)
+  throw Error("Queued Archiver launches require generated MQTT client IDs and clean sessions without expiry.");
+const managedQueuedInput = queuedGapSupported && queuedMqttChannelsCompatible &&
+  !!retainedStore.binding && !!process.env.UNS_HANDOVER_LAUNCH_ID;
 let mqttInput: UnsMqttProxy | undefined;
 let inputHandlerInstalled = false;
 let inputSubscriptionsConfirmed: boolean | null = null;
@@ -216,6 +284,11 @@ function maintenanceInterval(work: () => unknown, milliseconds: number) {
   return timer;
 }
 let inputProcess: UnsProxyProcess | undefined;
+const archiverCanWrite = () => queuedHandoverEffects.canWrite &&
+  (queuedSourceClosed || inputProcess?.isActive() === true);
+const queuedCommandsAllowed = () => !queuedSourceClosing && queuedHandoverEffects.canWrite &&
+  (!queuedTarget || inputProcess?.isActive() === true);
+
 let latestQuestDbHealth: QuestDbDependencyHealth | null = null;
 let latestIngestHealth: IngestHealth | null = null;
 let serviceMetadataPublisher: UnsProxyProcessWithApi | undefined;
@@ -431,7 +504,7 @@ const targetJournal = questDbWriter.configureTargetJournal({
   policyFile: retainedStore.resources["target-policy"]!,
   destinationId: createHash("sha256").update(resolveQuestDbPublicConfigurationString(config.questdb) ?? "unresolved").digest("hex"),
   ...((config as any).archiver?.targetJournal ?? {}),
-  canReplay: () => !ingestionPaused && replayControl?.paused !== true && (handoverDraining || (!shuttingDown && inputProcess?.isActive() === true)),
+  canReplay: () => !ingestionPaused && replayControl?.paused !== true && (handoverDraining || (!shuttingDown && archiverCanWrite())),
   onFault: message => logger.error(message),
 });
 replayControl = new ReplayControl(retainedStore.resources.replay!, () =>
@@ -440,8 +513,8 @@ replayControl = new ReplayControl(retainedStore.resources.replay!, () =>
   + legacyImports.status().reduce((n, source) => n + (source.job?.inFlight ?? 0), 0)
   + (historicalImports?.activeWork ?? 0));
 if (retainedStore.binding) replayControl.ensureMaintenancePause(retainedStore.binding.operationId);
-const replayApi = replayControlApi(replayControl, () => !shuttingDown && inputProcess?.isActive() === true, () => retainedStore.binding ? {storeId:retainedStore.binding.storeId,generation:retainedStore.binding.generation,operationId:retainedStore.binding.operationId,format:retainedStore.binding.format} : null);
-const targetApi = targetControlApi(targetJournal, () => !shuttingDown && inputProcess?.isActive() === true);
+const replayApi = replayControlApi(replayControl, () => !shuttingDown && queuedCommandsAllowed() && inputProcess?.isActive() === true, () => retainedStore.binding ? {storeId:retainedStore.binding.storeId,generation:retainedStore.binding.generation,operationId:retainedStore.binding.operationId,format:retainedStore.binding.format} : null);
+const targetApi = targetControlApi(targetJournal, () => !shuttingDown && queuedCommandsAllowed() && inputProcess?.isActive() === true);
 
 const estimateMqttEventBytes = (mqttEvent: { topic: any; message: any }): number => {
   const topic = String(mqttEvent.topic ?? "");
@@ -493,7 +566,7 @@ const storedReplay = new StoredEventReplay({
   eventFileExtension: EVENT_FILE_EXTENSION,
   processingExtension: EVENT_PROCESSING_EXTENSION,
   isReady: () => activeTopicsReady,
-  isStopping: () => shuttingDown || ingestionPaused || replayControl?.paused === true || inputProcess?.isActive() !== true,
+  isStopping: () => shuttingDown || !archiverCanWrite() || ingestionPaused || replayControl?.paused === true,
   hasLiveHeadroom: () =>
     hasStoredReplayLiveHeadroom(
       ingestQueue?.snapshot(),
@@ -522,8 +595,8 @@ const legacyImports = new LegacyImportManager({
   liveDirectory: EVENT_STORAGE_DIR,
   instanceId: `${config.uns.processName}:${process.env.UNS_CONTROLLER_NAME ?? "standalone"}:${path.resolve(".")}`,
   policyDigest: legacyStoragePolicyDigest,
-  acceptingCommands: () => !shuttingDown,
-  canWrite: () => !shuttingDown && !ingestionPaused && replayControl?.paused !== true && inputProcess?.isActive() === true && latestQuestDbHealth?.healthy !== false,
+  acceptingCommands: () => !shuttingDown && queuedCommandsAllowed(),
+  canWrite: () => !shuttingDown && archiverCanWrite() && !ingestionPaused && replayControl?.paused !== true && latestQuestDbHealth?.healthy !== false,
   hasLiveHeadroom: () => hasStoredReplayLiveHeadroom(ingestQueue?.snapshot(), ingestQueueMaxEvents, ingestQueueMaxBytes),
   write: writeLegacyPacket,
   acknowledged: key => targetJournal.acknowledgeLegacy(key),
@@ -539,8 +612,8 @@ if (historicalSettings || existsSync(historicalImportFile)) {
     directoryFile: historicalImportFile,
     resolveTarget: historicalImportTarget,
     readTarget: sql => questDbWriter.readHistoricalTarget(sql),
-    canWrite: () => !shuttingDown && !ingestionPaused && replayControl?.paused !== true
-      && inputProcess?.isActive() === true && activeTopicsAuthoritative && latestQuestDbHealth?.healthy === true
+    canWrite: () => !shuttingDown && archiverCanWrite() && !ingestionPaused && replayControl?.paused !== true
+       && activeTopicsAuthoritative && latestQuestDbHealth?.healthy === true
       && hasStoredReplayLiveHeadroom(ingestQueue?.snapshot(), ingestQueueMaxEvents, ingestQueueMaxBytes),
     write: async (mapping, target, record, row) => {
       const current = historicalImportTarget(mapping, { targetPrefix: target.prefix });
@@ -604,7 +677,7 @@ const archiverShutdown = createArchiverShutdown(
       // This proxy consumes data only. Flush its SDK housekeeping publications
       // even when the application is a passive successor; do not activate input
       // or the database writer just to stop the process cleanly.
-      mqttInput?.setPublisherActive();
+      if (!queuedLaunchRequested || inputProcess?.isActive()) mqttInput?.setPublisherActive();
       if (inputProcess) await inputProcess.shutdown();
       else if (mqttInput) await mqttInput.stop();
     },
@@ -640,7 +713,7 @@ const importApi = legacyImportApi(legacyImports, {
     version: process.env.version?.trim() || (await getPackageInfo()).version,
     instanceId: process.env.RTT_INSTANCE_ID?.trim() || null,
   },
-  acceptingCommands: () => !shuttingDown,
+  acceptingCommands: () => !shuttingDown && queuedCommandsAllowed(),
 });
 
 async function writeLegacyPacket(event: LegacyEvent, context: { startedAt: string; eventKey: string }): Promise<LegacyWriteResult> {
@@ -876,9 +949,11 @@ try {
   lastTopicsRefreshAt = Date.now();
   await subscribeToTopics(activeTopics);
   await setupApiProxy();
+  await registerQueuedArchiver();
   requestStoredEventReplay();
 } catch (error) {
   const reason = error instanceof Error ? error : new Error(String(error));
+  if (queuedLaunchRequested) throw reason;
   logger.error(`Failed to refresh active topics on startup: ${reason.message}`);
 }
 
@@ -886,7 +961,7 @@ if (isControllerManagedRuntime()) {
   if (!apiProxy) {
     throw new Error("UNS Archiver did not start its API runtime, so it cannot register with the controller.");
   }
-  await registerArchiverService();
+  if (!queuedLaunchRequested) await registerArchiverService();
 }
 
 maintenanceInterval(async () => {
@@ -996,10 +1071,12 @@ async function registerArchiverService(): Promise<void> {
 }
 
 async function reloadConfig(): Promise<{ dataStorageChanged: boolean; identitySubscriptionChanged: boolean }> {
+  if (!queuedCommandsAllowed()) return { dataStorageChanged: false, identitySubscriptionChanged: false };
   const previous = config;
   const previousIdentityEnrichmentEnabled = identityEnrichmentEnabled;
   ConfigFile.clearCache();
   const updated = await ConfigFile.loadConfig();
+  if (!queuedCommandsAllowed()) return { dataStorageChanged: false, identitySubscriptionChanged: false };
   // Invalid edits must not replace the last usable input policy/config.
   archiveTopicExclusionsSchema.parse((updated.questdb as typeof updated.questdb & { excludeTopics?: unknown }).excludeTopics ?? []);
   config = updated;
@@ -1038,6 +1115,7 @@ async function findNearestPackageJson(): Promise<string | null> {
  * Publish QuestDB mapping info so the controller can expose APIs.
  */
 function publishQuestDbMapping(): Promise<void> {
+  if (!queuedCommandsAllowed()) return Promise.resolve();
   mappingPublishRequested = true;
   if (mappingPublishPromise) return mappingPublishPromise;
   mappingPublishPromise = (async () => {
@@ -1049,10 +1127,10 @@ function publishQuestDbMapping(): Promise<void> {
   return mappingPublishPromise;
 }
 async function publishQuestDbMappingSnapshot() {
-  if (!mqttInput || shuttingDown) return;
+  if (!mqttInput || shuttingDown || !queuedCommandsAllowed()) return;
   try {
     const pkg = await getPackageInfo();
-    if (shuttingDown) return;
+    if (shuttingDown || !queuedCommandsAllowed()) return;
     const tableSuffixes = ["_data", "_table"] as const;
     const mappingsFromTopics = activeTopics.flatMap((topic) => {
       const tablePrefix = TopicMatcher.findTable(config, topic);
@@ -1166,6 +1244,147 @@ function archiverProcess(): UnsProxyProcessWithApi {
   inputProcess = owner;
   serviceMetadataPublisher = owner as UnsProxyProcessWithApi;
   return serviceMetadataPublisher;
+}
+
+function queuedApplicationObservations() {
+  return observeArchiverQueues({
+    live: ingestQueue!.snapshot(),
+    files: storedReplay.diagnostics(),
+    filesLastSpilledAt: lastDurableFileAt,
+    fileStorageFault: fallbackStorageError !== null || queuedAcceptanceFailed,
+    targets: targetJournal.queuedHandoverWork(),
+    legacy: legacyImports.status(),
+    historical: historicalImports?.queuedHandoverWork() ?? { pending: 0, inFlight: 0 },
+    batches: questDbWriter.getBatchDiagnostics(),
+    awaitingTopics: inactiveBufferEventIds.size,
+  });
+}
+
+function assertSourceHandoverAcceptance() {
+  if (queuedAcceptanceFailed || fallbackStorageError || !activeTopicsAuthoritative)
+    throw Error("Archiver could not confirm durable source admission.");
+}
+
+function spoolInactiveForHandover() {
+  for (const events of inactiveBufferByTopic.values()) {
+    for (const { mqttEvent, eventId } of events) saveEventToFileSync(mqttEvent, eventId);
+  }
+  inactiveBufferByTopic.clear();
+  inactiveBufferEventIds.clear();
+}
+
+async function registerQueuedArchiver() {
+  const owner = inputProcess as (UnsProxyProcess & {
+    enableQueuedHandover?: (adapter: QueuedGapAdapter) => Promise<void> | void;
+  }) | undefined;
+  if (!managedQueuedInput) {
+    if (queuedLaunchRequested) throw Error("The guarded Archiver MQTT role is unavailable.");
+    await owner?.enableQueuedHandover?.({ observeApplication: queuedApplicationObservations });
+    return;
+  }
+  const binding = retainedStore.binding!;
+  const input = mqttInput as QueuedGapProxy | undefined;
+  if (!owner?.enableQueuedHandover || !input || !inputHandlerInstalled)
+    throw Error("The guarded Archiver MQTT proxy is unavailable.");
+  const capacity = () => {
+    const adoptionPause = queuedTarget && verifiedFreshStore && replayControl?.hasInitialMaintenancePause(binding.operationId);
+    if (queuedAcceptanceFailed || !activeTopicsAuthoritative || ingestionPaused || (replayControl?.paused && !adoptionPause) ||
+        targetJournal.queuedHandoverWork().pending === null) return false;
+    try {
+      const disk = statfsSync(EVENT_STORAGE_DIR);
+      return Number(disk.bavail) * Number(disk.bsize) >= (legacyRuntimeSettings?.targetJournal?.reserveBytes ?? 64 * 1024 * 1024);
+    } catch { return false; }
+  };
+  const assertTargetReleaseReady = () => {
+    if (!queuedActivationAcknowledged || !input.getInputReadiness() || queuedAcceptanceFailed || archiverCanWrite())
+      throw Error("Archiver target admission or effects hold is unconfirmed.");
+  };
+  await owner.enableQueuedHandover({
+    observeApplication: queuedApplicationObservations,
+    queueIdentity: () => queuedSdk!.queuedHandoverRetainedStoreIdentity(binding),
+    targetCapacityAvailable: capacity,
+    assertTargetEffectsHeld: () => {
+      if (!queuedTarget || archiverCanWrite() || queuedAcceptanceFailed)
+        throw Error("Archiver target effects or durable admission are unconfirmed.");
+    },
+    assertTargetReleaseReady: () => {
+      assertTargetReleaseReady();
+      // This final SDK check runs after verification of the release request
+      // with an exact pending ledger. Commit the application control state
+      // before SDK promotion. A failure leaves the runtime physically held.
+      if (replayControl?.paused &&
+          (!verifiedFreshStore || !replayControl.resumeInitialMaintenancePause(binding.operationId)))
+        throw Error("Archiver target replay is paused.");
+    },
+    inputBoundary: {
+      kind: "mqtt-qos0-gap-v1",
+      async quiesceSource() {
+        assertSourceHandoverAcceptance();
+        if (ingestionPaused || replayControl?.paused || targetJournal.snapshot().policy.rules.length)
+          throw Error("Resume Archive pauses before queued handover.");
+        queuedSourceClosing = true;
+        // While broker admission is still open, new callbacks fsync directly.
+        // Move only untouched RAM work, and let any current writes resolve
+        // their existing journal receipts before acknowledging input close.
+        ingestQueue!.persistWaiting(item => saveEventToFileSync(item.value, item.id));
+        await ingestQueue!.waitForIdle();
+        spoolInactiveForHandover();
+        assertSourceHandoverAcceptance();
+        const witness = await input.closeQueuedHandoverQos0Input();
+        assertSourceHandoverAcceptance();
+        queuedSourceClosed = true;
+        return witness;
+      },
+      async openTarget() {
+        queuedHandoverEffects.assertHeld();
+        if (!capacity()) throw Error("Archiver target cannot retain incoming data.");
+        const witness = await input.openQueuedHandoverQos0Input();
+        queuedActivationAcknowledged = true;
+        return witness;
+      },
+    },
+    async recoverSourceInput(checkpoint) {
+      await input.closeQueuedHandoverQos0Input();
+      assertSourceHandoverAcceptance();
+      queuedSourceClosed = true;
+      return checkpoint;
+    },
+    async drainApplication() {
+      try {
+        await drainArchiverHandoverWork({
+          assertAdmissionClosed: () => {
+            if (!queuedSourceClosed) throw Error("Archiver source input closure is unconfirmed.");
+            assertSourceHandoverAcceptance();
+          },
+          scheduleExistingWork: async () => {
+            await storedReplay.recoverStaleProcessing();
+            await targetJournal.replay();
+            await storedReplay.run();
+            await storedReplay.refreshQueueSnapshot();
+          },
+          observe: queuedApplicationObservations,
+          signal: AbortSignal.timeout(5000),
+        });
+      } catch (error) {
+        // A clean bounded pass may leave a known backlog for SDK reconciliation.
+        if (!(error instanceof Error) || !["TimeoutError", "AbortError"].includes(error.name)) throw error;
+      }
+    },
+    async releaseTargetEffects() {
+      assertTargetReleaseReady();
+      // SDK promotes the owner after committing the release receipt.
+      const finishActivation = setInterval(() => {
+        if (shuttingDown) { clearInterval(finishActivation); return; }
+        if (!owner.isActive()) return;
+        clearInterval(finishActivation);
+        if (replayControl?.paused) return;
+        queuedHandoverEffects.release();
+        requestStoredEventReplay();
+        void registerArchiverService().catch(() => logger.warn("Queued Archiver registered effects; service metadata must retry."));
+      }, 100);
+      finishActivation.unref();
+    },
+  });
 }
 
 function advertiseArchiverReadiness(): void {
@@ -1411,6 +1630,9 @@ async function handleApiGetEvent(event: any) {
       return;
     }
     if (path.endsWith("/control")) {
+      if (action && action !== "status" && !queuedCommandsAllowed()) {
+        event.res.status(409).json({ error: "Archiver control is fenced by a queued handover." }); return;
+      }
       event.res.json(storedControlStatus(action));
       return;
     }
@@ -1449,6 +1671,9 @@ async function handleApiGetEvent(event: any) {
 }
 
 async function handleImportPostEvent(event: any) {
+  if (!queuedCommandsAllowed()) {
+    event.res.status(409).json({ error: "Archiver control is fenced by a queued handover." }); return;
+  }
   if (event?.req?.path?.endsWith("/history-import-control") && historyApi) { await historyApi.post(event); return; }
   if (event?.req?.path?.endsWith("/replay-control")) { replayApi.post(event); return; }
   if (event?.req?.path?.endsWith("/target-control")) { await targetApi.post(event); return; }
@@ -1464,7 +1689,7 @@ async function handleImportPostEvent(event: any) {
  * @param topics - The list of topics to subscribe to
  */
 async function subscribeToTopics(topics: string[]) {
-  if (shuttingDown) return;
+  if (shuttingDown || mqttInput && !queuedCommandsAllowed()) return;
   // Topic filters
   const ds = config.questdb.dataStorage;
   const topicFilters: string[] = ds.map((item) => item.topic);
@@ -1516,6 +1741,8 @@ async function subscribeToTopics(topics: string[]) {
         }),
         mqttSubToTopics: desiredTopics,
         subscribeThrottlingDelay: 0,
+        ...(managedQueuedInput ? { managedInput: true } : {}),
+        ...{ queuedHandoverQos0Input: managedQueuedInput ? true as const : undefined },
       }
     );
     mqttInput.event.on("mqttProxyStatus", event => {
@@ -1524,24 +1751,35 @@ async function subscribeToTopics(topics: string[]) {
       inputObservationAt = Date.now();
       publishInputReadinessChange(true);
     });
-    mqttInput.event.on("input", (incoming) => {
-      const mqttEvent = { topic: incoming.topic, message: incoming.message, _archiverOccurrenceId: randomUUID() };
-      try {
-        if (String(mqttEvent?.topic ?? "") === ENTITY_BINDING_INVALIDATION_TOPIC) {
-          handleEntityBindingInvalidation(mqttEvent?.message);
-          return;
-        }
-        if (!archiveTopicAdmission.accepts(String(mqttEvent.topic ?? ""))) return;
-        const eventId = generateEventId(mqttEvent);
-        ingestQueue!.enqueue({
-          id: eventId,
-          value: mqttEvent,
-          bytes: estimateMqttEventBytes(mqttEvent),
-        });
-      } catch (error) {
+    const receivedEvent = (incoming: { topic: string; message: string }) => ({
+      topic: incoming.topic, message: incoming.message, _archiverOccurrenceId: randomUUID(),
+    });
+    const handleIncoming = (mqttEvent: ReturnType<typeof receivedEvent>) => {
+      if (mqttEvent.topic === ENTITY_BINDING_INVALIDATION_TOPIC) {
+        handleEntityBindingInvalidation(mqttEvent.message);
+        return;
+      }
+      if (!archiveTopicAdmission.accepts(mqttEvent.topic)) return;
+      const eventId = generateEventId(mqttEvent);
+      if (queuedSourceClosing || queuedTarget && !archiverCanWrite()) {
+        const packet = UnsPacket.parseMqttPacket(mqttEvent.message);
+        if (packet?.message.data || packet?.message.table) saveEventToFileSync(mqttEvent, eventId);
+      } else {
+        ingestQueue!.enqueue({ id: eventId, value: mqttEvent, bytes: estimateMqttEventBytes(mqttEvent) });
+      }
+    };
+    if (managedQueuedInput) {
+      (mqttInput as QueuedGapProxy).setInputHandler(async incoming => {
+        try { handleIncoming(receivedEvent(incoming)); }
+        catch (error) { queuedAcceptanceFailed = true; throw error; }
+      });
+    } else mqttInput.event.on("input", incoming => {
+      const mqttEvent = receivedEvent(incoming);
+      try { handleIncoming(mqttEvent); }
+      catch (error) {
         logger.error(`Failed to enqueue MQTT event: ${errorMessage(error)}`);
-        const eventId = generateEventId(mqttEvent);
-        void saveEventToFile(mqttEvent, eventId).catch(() => logger.error("MQTT event persistence failed; acceptance not confirmed."));
+        void saveEventToFile(mqttEvent, generateEventId(mqttEvent))
+          .catch(() => logger.error("MQTT event persistence failed; acceptance not confirmed."));
       }
     });
     inputHandlerInstalled = true;
@@ -1915,7 +2153,7 @@ async function ensureEventStorageDirectories(): Promise<void> {
  * the live MQTT queue still has its reserved headroom.
  */
 async function processStoredEvents(): Promise<void> {
-  if (ingestionPaused || replayControl?.paused || shuttingDown) return;
+  if (ingestionPaused || replayControl?.paused || shuttingDown || queuedSourceClosing) return;
   await storedReplay.run();
 }
 
@@ -1959,6 +2197,7 @@ function saveEventToFileSync(mqttEvent: any, eventId: string): void {
     fallbackStorageError = null;
   } catch (error) {
     fallbackStorageError = "Event file persistence failed; disk acceptance is not confirmed.";
+    if (managedQueuedInput) queuedAcceptanceFailed = true;
     logger.error(fallbackStorageError);
     throw error;
   }

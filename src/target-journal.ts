@@ -862,6 +862,16 @@ export class TargetJournal<T> {
         "No new Archiver submissions to paused tables. ILP flush acknowledgement is not WAL visibility or control of other writers.",
     };
   }
+  queuedHandoverWork() {
+    if (this.closed || this.storageError) return { pending: null, inFlight: null, transactions: null };
+    const total = this.db.prepare("SELECT COALESCE(SUM(pending),0) AS pending FROM totals").get();
+    return {
+      pending: Number(total?.pending ?? 0),
+      inFlight: this.jobs.size,
+      transactions: this.durable.size,
+    };
+  }
+
   snapshot() {
     const targets = this.db
       .prepare(

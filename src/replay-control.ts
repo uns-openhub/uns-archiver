@@ -95,6 +95,19 @@ export class ReplayControl {
     if(this.state.maintenanceOperationId === operationId) return;
     this.command({action:"pause",requestId:operationId,expectedRevision:this.state.revision,reason:"Reviewed retained store adoption"},"retained-store",operationId);
   }
+  hasInitialMaintenancePause(operationId: string): boolean {
+    const { revision, paused, change, maintenanceOperationId, receipts } = this.state;
+    return !this.fault && revision === 1 && paused && maintenanceOperationId === operationId &&
+      change?.actor === "retained-store" && change.reason === "Reviewed retained store adoption" &&
+      receipts.length === 1 && receipts[0]?.result.requestId === operationId &&
+      receipts[0].result.revision === 1 && receipts[0].result.paused;
+  }
+  resumeInitialMaintenancePause(operationId: string): boolean {
+    if (!this.hasInitialMaintenancePause(operationId)) return false;
+    this.command({ action: "resume", requestId: randomUUID(), expectedRevision: 1,
+      reason: "Activated empty retained store after reviewed queued handover" }, "queued-handover");
+    return true;
+  }
   command(input: unknown, actor: string, maintenanceOperationId?: string) {
     const command = replayCommandSchema.parse(input);
     z.string().min(1).max(200).parse(actor);

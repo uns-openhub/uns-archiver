@@ -268,17 +268,15 @@ test("scoped SDK operator authority recovers JWKS, preserves paused work during 
     databaseDown = false;
     journal.start();
     assert.equal((await call("targets.resume", resume)).status, 200);
+    const pending = () => journal.snapshot().targets
+      .reduce((n, target) => n + Number(target.queued), 0);
     const deadline = Date.now() + 3000;
-    while (rows.length < 4 && Date.now() < deadline)
+    // The writer acknowledgement arrives before the durable receipt commits.
+    while ((rows.length < 4 || pending() > 0) && Date.now() < deadline)
       await new Promise((resolve) => setTimeout(resolve, 10));
     assert.deepEqual(rows.map((row) => row.payload.value).sort(), [1, 2, 3, 4]);
     assert.equal(new Set(rows.map((row) => row.id)).size, 4);
-    assert.equal(
-      journal
-        .snapshot()
-        .targets.reduce((n, target) => n + Number(target.queued), 0),
-      0,
-    );
+    assert.equal(pending(), 0);
     assert.equal(journal.snapshot().boundary.phase, "running");
   } finally {
     await proxy.stop();

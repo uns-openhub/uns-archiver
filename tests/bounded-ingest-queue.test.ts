@@ -146,3 +146,28 @@ test("persists an unexpected live-processing failure and releases queue capacity
   assert.equal(queue.snapshot().pendingEvents, 0);
   assert.equal(queue.snapshot().pendingBytes, 0);
 });
+
+test("handover preserves waiting occurrence IDs without copying an active writer", async () => {
+  const release = deferred();
+  const started: string[] = [];
+  const persisted: string[] = [];
+  const queue = new BoundedIngestQueue<number>({
+    maxPendingEvents: 4, maxPendingBytes: 40, concurrency: 1,
+    process: async item => { started.push(item.id); await release.promise; },
+    spill: async () => assert.fail("No ordinary overflow was expected"),
+  });
+  for (let i = 1; i <= 3; i++) queue.enqueue({ id: "event-" + i, value: i, bytes: 10 });
+  assert.throws(() => queue.persistWaiting(item => {
+    if (item.id === "event-3") throw Error("Disk unavailable");
+    persisted.push(item.id);
+  }), /Disk unavailable/);
+  assert.deepEqual(started, ["event-1"]);
+  assert.deepEqual(persisted, ["event-2"]);
+  assert.equal(queue.snapshot().queuedEvents, 1);
+  queue.persistWaiting(item => persisted.push(item.id));
+  release.resolve();
+  await queue.waitForIdle();
+  assert.deepEqual(started, ["event-1"]);
+  assert.deepEqual(persisted, ["event-2", "event-3"]);
+  assert.equal(queue.snapshot().pendingEvents, 0);
+});

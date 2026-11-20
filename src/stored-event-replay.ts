@@ -55,6 +55,7 @@ export type StoredReplayDiagnostics = {
   failed: number;
   recoveredStaleProcessing: number;
   lastRunAt: string | null;
+  lastMutationAt?: number;
   lastSuccessAt: string | null;
   lastError: string | null;
   limits: StoredReplayLimits;
@@ -102,6 +103,7 @@ export class StoredEventReplay {
   private failed = 0;
   private recoveredStaleProcessing = 0;
   private lastRunAt: string | null = null;
+  private lastMutationAt = 0;
   private lastSuccessAt: string | null = null;
   private lastError: string | null = null;
 
@@ -394,6 +396,7 @@ export class StoredEventReplay {
               return;
             }
             await fs.rename(processingFilePath, originalFilePath);
+            this.lastMutationAt = Date.now();
             this.recoveredStaleProcessing++;
           } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -432,6 +435,7 @@ export class StoredEventReplay {
       failed: this.failed,
       recoveredStaleProcessing: this.recoveredStaleProcessing,
       lastRunAt: this.lastRunAt,
+      lastMutationAt: this.lastMutationAt,
       lastSuccessAt: this.lastSuccessAt,
       lastError: this.lastError,
       limits: this.resolveLimits(),
@@ -532,6 +536,7 @@ export class StoredEventReplay {
 
     try {
       await fs.unlink(lockedEvent.processingFilePath);
+      this.lastMutationAt = Date.now();
       this.successful += 1;
       this.lastSuccessAt = new Date().toISOString();
       this.lastError = null;
@@ -569,6 +574,7 @@ export class StoredEventReplay {
     const processingFilePath = `${originalFilePath}.${this.currentProcessId}.${Date.now()}${this.options.processingExtension}`;
     try {
       await fs.rename(originalFilePath, processingFilePath);
+      this.lastMutationAt = Date.now();
       this.ownedProcessingFiles.add(path.basename(processingFilePath));
       return {
         originalFileName: fileName,
@@ -599,6 +605,7 @@ export class StoredEventReplay {
           lockedEvent.processingFilePath,
           lockedEvent.originalFilePath,
         );
+        this.lastMutationAt = Date.now();
       }
       this.requeued += 1;
     } catch {
@@ -618,6 +625,7 @@ export class StoredEventReplay {
         lockedEvent.processingFilePath,
         path.join(this.options.failedStorageDirectory, failedFileName),
       );
+      this.lastMutationAt = Date.now();
     } catch {
       this.recordError("stored-replay-failed-move-failed");
     }
@@ -635,6 +643,7 @@ export class StoredEventReplay {
           `${fileName}.invalid_processing_name.${timestamp}`,
         ),
       );
+      this.lastMutationAt = Date.now();
     } catch {
       this.recordError("stored-replay-invalid-processing-move-failed");
     }
